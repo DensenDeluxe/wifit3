@@ -109,6 +109,7 @@ class MT7921AUDriver(Driver):
         self.transport.subscribe(self._on_raw_rx)
 
         if self._detect_warm():
+            self._require_own_firmware()
             return await self._warm_reattach(progress_cb)
         return await self._cold_boot(progress_cb)
 
@@ -125,6 +126,19 @@ class MT7921AUDriver(Driver):
             return False
         logger.debug("MT7921AU warm-check: MT_CONN_ON_MISC=0x%x", misc)
         return (misc & MT_TOP_MISC2_FW_N9_RDY) != 0
+
+    def _require_own_firmware(self) -> None:
+        try:
+            needs_reset = self.firmware.dma_need_reinit()
+        except usb.core.USBError as e:
+            logger.warning("MT7921AU warm check: WFDMA read failed (%s); assuming reset needed.", e)
+            needs_reset = True
+        if needs_reset:
+            logger.error("MT7921AU: firmware was booted by another driver; replug required.")
+            raise BringUpError(
+                "MT7921AU warm reattach",
+                "the card's firmware is already loaded and needs a reset. "
+                "Unplug the device, wait a few seconds, replug, and try again.")
 
     @staticmethod
     def derive_product_name(mac: Optional[str]) -> Optional[str]:
