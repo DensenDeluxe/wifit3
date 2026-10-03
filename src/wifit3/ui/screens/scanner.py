@@ -22,7 +22,6 @@ from wifit3.campaigns.wps.registrar import PinResult
 from wifit3.persist.config import Config
 from wifit3.models import AccessPoint
 from wifit3.crack.handshake import pmkid_crackable
-from wifit3.crack import default_keys
 from wifit3.ui.vault.global_tracker import GlobalJobTracker
 
 from ..capture_events import (
@@ -402,6 +401,11 @@ class ScannerView(Screen):
         elif ev.kind == CaptureKind.WPS_PBC:
             msg = (f'[bold green]✓ WPS PSK[/bold green] [dim](via PushButton)[/dim] on '
                    f'[bold cyan]{ap_label}[/bold cyan] = "{escape(ev.value or "")}"')
+        elif ev.kind == CaptureKind.DEFAULT_PSK:
+            fam = f" [dim]({escape(ev.family)}, offline from BSSID)[/dim]" if ev.family else ""
+            msg = (f'[bold green]✓ FACTORY-DEFAULT PSK[/bold green] on '
+                   f'[bold cyan]{ap_label}[/bold cyan] = "{escape(ev.value or "")}"{fam}')
+            save_result = self.app.vault.save_wpa_psk(ap, ev.value or "")
         else:
             return  # eapol events suppressed in scanner
         # Leading space aligns the ✓ win with the ● / ├─► / └─► tree log above it.
@@ -415,32 +419,15 @@ class ScannerView(Screen):
             name = ev.ssid or ev.bssid
             if ev.kind == CaptureKind.WEP_KEY:
                 self.notify(f"{name}: {wep_key_ascii(ev.value or '')}", title=title, timeout=6)
+            elif ev.kind == CaptureKind.DEFAULT_PSK:
+                full_title = f"{title} ({ev.family})" if ev.family else title
+                self.notify(f'{name}: "{ev.value or ""}"', title=full_title, timeout=8)
             else:
                 pair = ev.pair_label or ("M1" if ev.kind == CaptureKind.PMKID else None)
                 full_title = f"{title} ({pair})" if pair else title
                 body = (f"[bold]{escape(name)}[/bold] on channel [bold]{ap.channel}[/bold] "
                         f"[dim bold](BSSID: {escape(ap.bssid)})[/dim bold]")
                 self.notify(body, title=full_title, timeout=6)
-        if ev.kind in (CaptureKind.HANDSHAKE, CaptureKind.PMKID):
-            self._maybe_default_key(ap, ev.client_mac)
-
-    def _maybe_default_key(self, ap: AccessPoint, client_mac: str) -> None:
-        """A captured handshake/PMKID is the oracle: if the AP's SSID/BSSID maps to a known
-        factory-default-key family and a candidate verifies, surface the plaintext PSK."""
-        if ap.default_psk or Config.is_silenced(ap.bssid):
-            return
-        hit = default_keys.recover(ap.ssid, ap.bssid, ap.handshakes.get(client_mac))
-        if hit is None:
-            return
-        psk, family = hit
-        ap.default_psk = psk
-        name = escape(ap.ssid or ap.bssid)
-        self._write_log(Text.from_markup(
-            f" [bold black on green] ✓ FACTORY-DEFAULT PSK [/bold black on green] on "
-            f'[bold cyan]{name}[/bold cyan] = "[bold]{escape(psk)}[/bold]" '
-            f"[dim]({escape(family)}, offline from BSSID)[/dim]", emoji=False))
-        self.notify(f'{ap.ssid or ap.bssid}: "{psk}"',
-                    title=f"Factory-default key ({family})", timeout=8)
 
     def _write_log(self, text) -> None:
         try:

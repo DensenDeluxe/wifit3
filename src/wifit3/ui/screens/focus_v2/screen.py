@@ -681,6 +681,15 @@ class FocusViewV2(Screen):
                 f"[green]{escape(ev.ssid or '')}[/green] "
                 f"[dim]via {method_label}[/dim]"
             )
+        elif ev.kind == CaptureKind.DEFAULT_PSK:
+            fam = f" [dim]({escape(ev.family)})[/dim]" if ev.family else ""
+            self._log(
+                f'[black bold on green] ✓ FACTORY-DEFAULT PSK [/black bold on green] '
+                f'= "[bold]{escape(ev.value or "")}[/bold]"{fam}'
+            )
+            result = self.app.vault.save_wpa_psk(ap, ev.value or "")
+            if result is not None:
+                self._log(treelog.leaf(_save_line(result)))
 
     def _log(self, markup: str) -> None:
         ts = time.strftime("%H:%M:%S")

@@ -13,8 +13,8 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Iterator, Optional, Set, Tuple
 
-from wifit3.models import AccessPoint
-from wifit3.crack import handshake as wpa
+from wifit3.models import AccessPoint, Handshake
+from wifit3.crack import default_keys, handshake as wpa
 
 
 # Human-readable labels for AccessPoint.decloak_method / CaptureEvent.method.
@@ -41,6 +41,7 @@ class CaptureKind(str, Enum):
     WPS_PIN   = "wps_pin"      # router's WPS PIN
     WPS_PSK   = "wps_psk"      # passphrase via WPS PIN attack
     WPS_PBC   = "wps_pbc"      # passphrase via WPS Push-Button
+    DEFAULT_PSK = "default_psk"  # factory-default passphrase, recovered offline from the BSSID/ESSID
 
 
 # Toast title per capture *win*; kinds absent here are log-only. Shared by both views.
@@ -48,6 +49,7 @@ CAPTURE_TOAST_TITLES = {
     CaptureKind.HANDSHAKE: "Handshake captured",
     CaptureKind.PMKID:     "PMKID captured",
     CaptureKind.WEP_KEY:   "WEP key recovered",
+    CaptureKind.DEFAULT_PSK: "Factory-default key",
 }
 
 
@@ -73,9 +75,11 @@ class CaptureEvent:
     pair_label: Optional[str] = None
     # decloak-only: "beacon"/"probe_resp"/"assoc_req"/"reassoc_req" (future: "mbssid_ie")
     method: Optional[str] = None
-    # recovered credential for WEP_KEY / WPS_* kinds (key hex / PSK / PIN); the
-    # kind says which it is. None for the others.
+    # recovered credential for WEP_KEY / WPS_* / DEFAULT_PSK kinds (key hex / PSK /
+    # PIN); the kind says which it is. None for the others.
     value: Optional[str] = None
+    # default_psk-only: the matched factory-default-key family, for display.
+    family: Optional[str] = None
 
 
 class CaptureEventDetector:
@@ -105,6 +109,9 @@ class CaptureEventDetector:
         # (bssid, kind) for one-shot recovered-credential events (WEP key, WPS
         # PIN/PSK/PBC): each announces exactly once per AP.
         self._creds_announced: Set[Tuple[str, CaptureKind]] = set()
+        # BSSIDs we've already run factory-default-key recovery on (hit or miss),
+        # so the offline PBKDF2 check fires at most once per AP.
+        self._default_psk_tried: Set[str] = set()
 
     def reset(self) -> None:
         """Drop all state. Useful when refocusing on a new target."""
@@ -115,6 +122,7 @@ class CaptureEventDetector:
         self._seen_hidden.clear()
         self._decloak_announced.clear()
         self._creds_announced.clear()
+        self._default_psk_tried.clear()
 
     def poll(
         self,
@@ -231,3 +239,28 @@ class CaptureEventDetector:
                 yield CaptureEvent(
                     kind=kind, bssid=ap.bssid, ssid=ap.ssid, value=value,
                 )
+
+        # Factory-default passphrase: a captured handshake/PMKID is the oracle that lets us
+        # verify a key derived offline from the BSSID/ESSID. Run once per AP here, in the shared
+        # detector, so both views surface it and a handshake grabbed in Focus is recovered too.
+        if not ap.default_psk and ap.bssid not in self._default_psk_tried:
+            oracle = self._default_key_oracle(ap)
+            if oracle is not None:
+                self._default_psk_tried.add(ap.bssid)
+                hit = default_keys.recover(ap.ssid, ap.bssid, oracle)
+                if hit is not None:
+                    ap.default_psk, family = hit
+                    self._creds_announced.add((ap.bssid, CaptureKind.DEFAULT_PSK))
+                    yield CaptureEvent(
+                        kind=CaptureKind.DEFAULT_PSK, bssid=ap.bssid, ssid=ap.ssid,
+                        value=ap.default_psk, family=family,
+                    )
+
+    @staticmethod
+    def _default_key_oracle(ap: AccessPoint) -> Optional[Handshake]:
+        """First capture on this AP that can verify a candidate key: a valid 4-way pair
+        or a crackable PMKID. None until something capturable lands."""
+        for hs in ap.handshakes.values():
+            if hs.valid_pairs_by_instance() or (hs.pmkid and wpa.pmkid_crackable(hs)):
+                return hs
+        return None

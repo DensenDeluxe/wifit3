@@ -204,6 +204,15 @@ class Vault:
                                     path=str(result.path), bssid=ap.bssid, value=psk, ssid=ap.ssid))
         return result
 
+    def save_wpa_psk(self, ap: "AccessPoint", psk: str) -> Optional[SaveResult]:
+        result = save.save_wpa_psk(ap, psk)
+        if result and result.was_new:
+            self.revision += 1
+            self._index.setdefault(ap.bssid, []).insert(
+                0, PersistedCapture(type=CaptureType.WPA_PSK, timestamp=int(time.time()),
+                                    path=str(result.path), bssid=ap.bssid, value=psk, ssid=ap.ssid))
+        return result
+
     # ----- filesystem ops (the screen goes through these, never touches disk) -----
 
     def delete_capture(self, capture: PersistedCapture) -> None:

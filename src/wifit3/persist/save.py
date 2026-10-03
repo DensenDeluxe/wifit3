@@ -403,3 +403,30 @@ def save_wps_pbc(ap: AccessPoint, psk: str) -> Optional[SaveResult]:
     )
     path.write_text(body, encoding="utf-8")
     return SaveResult(path=path, was_new=True)
+
+
+# ----- WPA passphrase (factory-default key / cracked PSK) -------------------
+
+def save_wpa_psk(ap: AccessPoint, psk: str) -> Optional[SaveResult]:
+    """Persist a recovered WPA passphrase (e.g. a factory-default key). Dedupes by PSK for this BSSID."""
+    captures_dir = Path(Config.captures_dir)
+    if not psk:
+        return None
+    for p in _existing(captures_dir, ap.bssid, "_wpa_psk.txt"):
+        try:
+            text = p.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        m = WPS_PSK_RE.search(text)
+        if m and m.group(1).strip() == psk:
+            return SaveResult(path=p, was_new=False)
+
+    captures_dir.mkdir(parents=True, exist_ok=True)
+    path = _fresh_path(captures_dir, ap.ssid, ap.bssid, "_wpa_psk.txt")
+    body = (
+        f"SSID: {ap.ssid or ''}\n"
+        f"BSSID: {ap.bssid}\n"
+        f"PSK: {psk}\n"
+    )
+    path.write_text(body, encoding="utf-8")
+    return SaveResult(path=path, was_new=True)
