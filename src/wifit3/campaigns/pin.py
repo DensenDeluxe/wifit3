@@ -18,8 +18,10 @@ Sweep wiring (see registrar.py):
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import json
 import logging
+import multiprocessing
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -535,7 +537,7 @@ class WpsCampaign(Campaign):
                     continue                       # bounded retry; never advance the keyspace
                 self._consecutive_refusals = 0
 
-                if self._try_pixie(pin, out):
+                if await self._try_pixie(pin, out):
                     self._save_state()
                     continue
 
@@ -620,13 +622,31 @@ class WpsCampaign(Campaign):
             return 0.0
         return max(0.0, self._lock_end_at - time.monotonic())
 
-    def _try_pixie(self, pin: str, out: AttemptOutcome) -> bool:
+    @staticmethod
+    async def _run_pixie(bundle):
+        """Offload the CPU-bound PixieDust search to a forked worker so the GIL can't stall the
+        event loop (RTL819x's timestamp sweep is the heavy case). A fork child only runs the pure
+        search and exits, so it touches none of the app's locked state; where fork is unavailable
+        (Windows) or the pool fails, run inline."""
+        loop = asyncio.get_running_loop()
+        try:
+            ctx = multiprocessing.get_context("fork")
+        except ValueError:
+            return recover_pin(bundle)
+        try:
+            with concurrent.futures.ProcessPoolExecutor(max_workers=1, mp_context=ctx) as pool:
+                return await loop.run_in_executor(pool, recover_pin, bundle)
+        except Exception:
+            logger.debug("Pixie offload failed; running inline", exc_info=True)
+            return recover_pin(bundle)
+
+    async def _try_pixie(self, pin: str, out: AttemptOutcome) -> bool:
         """Run Pixie once after M3 capture; verify any recovered PIN online next."""
         if self._pixie_tried or self.state.phase == "verify" or out.pixie is None:
             return False
         self._pixie_tried = True
         self.log(f"{self._attempt_prefix(pin)} → trying [cyan]PixieDust[/] offline…")
-        result = recover_pin(out.pixie)
+        result = await self._run_pixie(out.pixie)
         if not result.found or result.pin is None:
             self.log(f"{self._cont_align()} → [dim italic]no PixieDust matches found[/]")
             return False
