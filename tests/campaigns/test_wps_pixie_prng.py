@@ -1,11 +1,13 @@
-"""Known-answer tests for the PixieDust weak-PRNG ports (campaigns/wps/pixie_prng.py).
+"""Known-answer tests for the PixieDust weak-PRNG module (campaigns/wps/pixie_prng.py).
 
-Vectors in data/pixie_prng_vectors.json are the verbatim output of pixiewps 1.4.2's own PRNG
-routines (see the fixture's _provenance), so these assert the Python port is byte-for-byte the
-reference. The RTL819x generator is additionally pinned to the canonical glibc srandom(1) sequence.
+Vectors in data/pixie_prng_vectors.json come from literal reference implementations of glibc's
+TYPE_3 additive generator, the Ralink Galois LFSR and the eCos LCG (see the fixture's
+_provenance), anchored to the canonical glibc srandom(1) sequence 1804289383, 846930886,
+1681692777, 1714636915.
 """
 
 import json
+import struct
 from pathlib import Path
 
 import pytest
@@ -15,25 +17,19 @@ from wifit3.campaigns.wps import pixie_prng as P
 _VEC = json.loads((Path(__file__).parent / "data" / "pixie_prng_vectors.json").read_text())
 
 
-@pytest.mark.parametrize("seed, want", _VEC["rtl_nonce_fill"].items())
-def test_rtl_nonce_fill_matches_reference(seed, want):
-    assert P.rtl_nonce_fill(int(seed)).hex() == want
+@pytest.mark.parametrize("seed, want", _VEC["glibc_nonce"].items())
+def test_glibc_nonce_matches_reference(seed, want):
+    assert P.glibc_nonce(int(seed)).hex() == want
 
 
-@pytest.mark.parametrize("seed, want", _VEC["glibc_fast_nonce"].items())
-def test_glibc_fast_nonce_matches_reference(seed, want):
-    assert P.glibc_fast_nonce(int(seed)).hex() == want
+@pytest.mark.parametrize("seed, want", _VEC["glibc_first_word"].items())
+def test_glibc_first_word_matches_reference(seed, want):
+    assert P.glibc_first_word(int(seed)) == want
 
 
-@pytest.mark.parametrize("seed, want", _VEC["glibc_fast_seed"].items())
-def test_glibc_fast_seed_matches_reference(seed, want):
-    assert P.glibc_fast_seed(int(seed)) == want
-
-
-def test_rtl_reproduces_canonical_glibc_srandom1():
+def test_glibc_nonce_reproduces_canonical_srandom1():
     # glibc `srandom(1); random()` → 1804289383, 846930886, 1681692777, 1714636915.
-    import struct
-    words = struct.unpack(">IIII", P.rtl_nonce_fill(1))
+    words = struct.unpack(">IIII", P.glibc_nonce(1))
     assert words == (1804289383, 846930886, 1681692777, 1714636915)
 
 
@@ -64,24 +60,24 @@ def test_ralink_recover_rejects_impossible_nonce():
     assert P.ralink_recover(corrupt) is None
 
 
-def test_rtl_find_nonce_seed_roundtrips_in_window():
+def test_find_glibc_nonce_seed_roundtrips_in_window():
     seed = 1700000000
-    nonce = P.glibc_fast_nonce(seed)
-    assert P.rtl_find_nonce_seed(nonce, seed + 5, seed - 5) == seed
+    nonce = P.glibc_nonce(seed)
+    assert P.find_glibc_nonce_seed(nonce, seed + 5, seed - 5) == seed
 
 
-def test_rtl_find_nonce_seed_absent_outside_window():
+def test_find_glibc_nonce_seed_absent_outside_window():
     seed = 1700000000
-    nonce = P.glibc_fast_nonce(seed)
-    assert P.rtl_find_nonce_seed(nonce, seed + 100, seed + 50) is None
+    nonce = P.glibc_nonce(seed)
+    assert P.find_glibc_nonce_seed(nonce, seed + 100, seed + 50) is None
 
 
-@pytest.mark.parametrize("seed, want", _VEC["ecos_rand_simple_stream"].items())
-def test_ecos_rand_simple_stream_matches_reference(seed, want):
+@pytest.mark.parametrize("seed, want", _VEC["ecos_rand_stream"].items())
+def test_ecos_rand_stream_matches_reference(seed, want):
     s = int(seed)
     out = bytearray()
     for _ in range(48):
-        v, s = P.ecos_rand_simple(s)
+        v, s = P.ecos_rand(s)
         out.append(v & 0xFF)
     assert out.hex() == want
 

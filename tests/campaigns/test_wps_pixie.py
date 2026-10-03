@@ -121,10 +121,20 @@ def test_ralink_mode_skips_non_ralink_nonce():
 def test_rtl819x_mode_recovers_pin():
     pin = pins.full_pin("9753", "864")
     seed = 1700000000
-    assert pixie_prng.rtl_nonce_fill(seed) == pixie_prng.glibc_fast_nonce(seed)
-    nonce = pixie_prng.rtl_nonce_fill(seed)          # dist-0 enrollee: nonce == E-S1 == E-S2
+    nonce = pixie_prng.glibc_nonce(seed)             # dist-0 enrollee: nonce == E-S1 == E-S2
     bundle = _bundle_for(pin, nonce, nonce, nonce)
     result = recover_pin(bundle, modes=(PixieMode.RTL819X,), rtl_window=(seed + 3, seed - 3))
+    assert result.found and result.pin == pin and result.mode is PixieMode.RTL819X
+
+
+def test_rtl819x_mode_recovers_pin_from_neighbouring_seeds():
+    # The enrollee draws each secret a second or two after the nonce, so E-S1/E-S2 come from
+    # seeds the search has to walk out to. A low first half keeps the 10^4 half-sweep cheap.
+    pin = pins.full_pin("0001", "000")
+    seed = 1700000000
+    bundle = _bundle_for(pin, pixie_prng.glibc_nonce(seed + 1), pixie_prng.glibc_nonce(seed + 2),
+                         pixie_prng.glibc_nonce(seed))
+    result = recover_pin(bundle, modes=(PixieMode.RTL819X,), rtl_window=(seed + 2, seed - 2))
     assert result.found and result.pin == pin and result.mode is PixieMode.RTL819X
 
 
@@ -137,7 +147,7 @@ def test_rtl819x_mode_rejects_non_glibc_nonce():
 def test_rtl819x_mode_absent_when_seed_outside_window():
     pin = pins.full_pin("9753", "864")
     seed = 1700000000
-    nonce = pixie_prng.rtl_nonce_fill(seed)
+    nonce = pixie_prng.glibc_nonce(seed)
     bundle = _bundle_for(pin, nonce, nonce, nonce)
     result = recover_pin(bundle, modes=(PixieMode.RTL819X,), rtl_window=(seed + 1000, seed + 900))
     assert result.found is False
