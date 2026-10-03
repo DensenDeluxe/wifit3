@@ -1,0 +1,66 @@
+{
+ "_provenance": "Authoritative (ESSID, BSSID) -> default-key vectors from the Router Keygen reference test suite (github.com/routerkeygen/routerkeygenPC, test/AlgorithmsTest.cpp). The Python generators in crack/default_keys.py are reimplemented from the published algorithms and must reproduce these exactly.",
+ "arcadyan": [
+  {"ssid": "Arcor-910B02", "bssid": "00:12:BF:91:0B:EC", "keys": ["F9C8C9DEF"]},
+  {"ssid": "VodafoneGG11", "bssid": "74:31:70:33:00:11", "keys": ["58639029A", "58639129A"]}
+ ],
+ "huawei_infinitum": [
+  {"ssid": "INFINITUM1be2", "bssid": "64:16:F0:35:1C:FD", "keys": ["3432333133"]}
+ ],
+ "belkin": [
+  {"ssid": "Belkin_C0DE", "bssid": "94:44:52:00:C0:DE", "keys": ["040D93B0"]},
+  {"ssid": "belkin.ed0", "bssid": "94:44:52:00:ce:d0", "keys": ["d49496b9"]},
+  {"ssid": "Belkin_24615A", "bssid": "08:86:3b:24:61:5a", "keys": ["2E4C5631"]}
+ ],
+ "intercable": [
+  {"ssid": "InterCable983996", "bssid": "7C:05:07:29:F7:47", "keys": ["m7c050729f748", "m7c050729f749"]}
+ ],
+ "ote": [
+  {"ssid": "OTEcb4c", "bssid": "00:13:33:37:CB:4C", "keys": ["000133337cb4c"]}
+ ],
+ "tpw4g": [
+  {"ssid": "TPW4G_1A2B3C", "bssid": "11:22:33:44:aa:BB", "keys": ["874744AABB"]}
+ ],
+ "wifimedia": [
+  {"ssid": "wifimedia_R-1234", "bssid": "00:26:5B:1E:28:A5", "keys": ["00265b1e28a0", "00265B1E28A0"]}
+ ],
+ "pldt": [
+  {"ssid": "PLDTMyDSL", "bssid": "11:22:33:44:aa:BB", "keys": ["PLDTWIFI4AABB"]},
+  {"ssid": "PLDTHOMEFIBR_44aabb", "bssid": "11:22:33:44:aa:BB", "keys": ["wlanbb5544"]}
+ ],
+ "pbs": [
+  {"ssid": "PBS-11222E", "bssid": "38:22:9D:11:22:33", "keys": ["PcL2PgUcX0VhV"]}
+ ],
+ "wlan6": [
+  {"ssid": "WLAN123456", "bssid": "11:22:33:44:55:66",
+   "keys": ["5630556304607", "5730446305616", "5430776306625", "5530666307634",
+            "5230116300643", "5330006301652", "5030336302661", "5130226303670",
+            "5E30DD630C68F", "5F30CC630D69E"]}
+ ],
+ "eircom": [
+  {"ssid": "eircom2633 7520", "bssid": "00:0f:cc:59:b0:9c", "keys": ["29b2e9560b3a83a187ec5f2057"]}
+ ],
+ "sitecom": [
+  {"ssid": "Sitecom", "bssid": "00:0C:F6:01:23:45", "keys": ["c6aBBBbg", "q69CB1kg", "44B5Dmyc", "N66zHMRc"]},
+  {"ssid": "Sitecom", "bssid": "00:0C:F6:01:2F:F5", "keys": ["zb1cgzvx", "6sWNS6D6", "JEmMRJSk", "qVMKQq7B"]},
+  {"ssid": "Sitecom", "bssid": "00:0C:F6:01:2F:FE", "keys": ["ZB1kqZVQ", "DhCvzDve", "S63uySh4", "tURTXt6t"]},
+  {"ssid": "Sitecom", "bssid": "00:0C:F6:F1:2F:FE", "keys": ["6P2AB6Pb", "GEBAWGEA", "GDPK6GDb", "6sq9v6sp"]}
+ ],
+ "alice_germany": [
+  {"ssid": "ALICE-WLANC3", "bssid": "00:1E:40:A0:84:C4", "keys": ["MGIwMjhjYTYzZmM0"]}
+ ],
+ "teletu": [
+  {"ssid": "TeleTu_00238EE528C7", "bssid": "00:23:8E:E5:28:C7", "keys": ["15301Y0013305"]}
+ ],
+ "upc_ubee": [
+  {"ssid": "UPC5684389", "bssid": "64:7C:34:3C:ff:63", "keys": ["TVROBKMN"]}
+ ],
+ "bssid": [
+  {"ssid": "Claro-7296", "bssid": "C4:12:F5:38:72:96", "keys": ["C412F5387296", "c412f5387296"]},
+  {"ssid": "movistar_8c2022", "bssid": "00:0A:C2:8C:20:2B", "keys": ["000ac28c2022"]},
+  {"ssid": "OTE37cb4c", "bssid": "B0:75:D5:37:CB:4C", "keys": ["b075d537cb4c"]},
+  {"ssid": "ZTE-f24ab5", "bssid": "08:3F:BC:F2:4A:B5", "keys": ["083fbcf2", "083fbcf3"]},
+  {"ssid": "Nemont", "bssid": "00:04:ED:DD:8C:E0", "keys": ["0004EDDD8CE0"]},
+  {"ssid": "SINGTEL-54F5", "bssid": "00:26:75:DE:54:F6", "keys": ["0014570741"]}
+ ]
+}

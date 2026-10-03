@@ -105,6 +105,10 @@ class AccessPoint:
     wps_pin: Optional[str] = None
     wps_pin_psk: Optional[str] = None
 
+    # Factory-default WPA passphrase recovered from the BSSID/ESSID and confirmed against a
+    # capture (crack.default_keys); set only once the key verified.
+    default_psk: Optional[str] = None
+
     # Smoothed RSSI per receiving card (card name -> dBm), written by WlanSink.
     signal_by_card: Dict[str, int] = field(default_factory=dict)
     signal_history: Dict[str, deque[int]] = field(default_factory=dict, repr=False)
