@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import subprocess
 import os
@@ -89,8 +90,8 @@ class _CapturePanel(VerticalGroup):
     _CapturePanel .date { height: 1; margin-bottom: 1; }
     _CapturePanel .key-row { height: 1; align: left middle; margin-bottom: 1; }
     _CapturePanel .key-display { height: 1; margin-right: 3; margin-bottom: 1; }
-    _CapturePanel .copy-btn { max-width: 6; height: 1; border: none; background: $background; color: $foreground; margin-right: 3 }
-    _CapturePanel .verify-btn { max-width: 8; height: 1; border: none }
+    _CapturePanel .copy-btn { min-width: 0; margin-right: 3; }
+    _CapturePanel .verify-btn { min-width: 14; }
     _CapturePanel .actions { height: auto; align: left middle; }
     _CapturePanel .spacer { width: 1fr; }
     """
@@ -104,22 +105,31 @@ class _CapturePanel(VerticalGroup):
         for cap in sorted(captures, key=lambda c: c.timestamp, reverse=True):
             self._by_path.setdefault(cap.path, cap)
         self._files = list(self._by_path.values())
+        self._verify_task: Optional[asyncio.Task] = None
+
+    def cancel_verification(self) -> None:
+        """Cancel any running verification task on this panel."""
+        if self._verify_task is not None and not self._verify_task.done():
+            self._verify_task.cancel()
+            self._verify_task = None
 
     def compose(self) -> ComposeResult:
+        n = len(self._files)
+        s = "" if n == 1 else "s"
         if self._title == "WPS PSKs":
-            self.border_title = f"WPS ({len(self._files)} PSKs)"
+            self.border_title = f"WPS ({n} PSK{s})"
         elif self._title == "WPA PSKs":
-            self.border_title = f"WPA ({len(self._files)} PSKs)"
+            self.border_title = f"WPA ({n} PSK{s})"
         elif self._title == "WPS PINs":
-            self.border_title = f"WPS ({len(self._files)} PINs)"
+            self.border_title = f"WPS ({n} PIN{s})"
         elif self._title == "WEP KEYs":
-            self.border_title = f"WEP ({len(self._files)} Keys)"
+            self.border_title = f"WEP ({n} Key{s})"
         elif self._title == "HASHCAT":
-            self.border_title = f"HASHCAT ({len(self._files)} .hc22000 files)"
+            self.border_title = f"HASHCAT ({n} .hc22000 file{s})"
         elif self._title == "HANDSHAKE":
-            self.border_title = f"HANDSHAKE ({len(self._files)} .pcap files)"
+            self.border_title = f"HANDSHAKE ({n} .pcap file{s})"
         else:
-            self.border_title = f"{self._title} ({len(self._files)})"
+            self.border_title = f"{self._title} ({n})"
 
         newest = self._files[0]
         yield Select([(Path(c.path).name, c.path) for c in self._files], value=newest.path, allow_blank=False, classes="file")
@@ -157,23 +167,26 @@ class _CapturePanel(VerticalGroup):
                 btn = Button(f"Launch {tool.name}", "primary", classes=f"tool-btn launch-tool-{tool.name}")
                 actions.mount(btn, before=".spacer")
 
-        def _row(label: str, val: str, btn_id: str):
+        def _row(label: str, val: str, btn_id: str, target_type: Optional[CaptureType] = None):
+            verify_btn = Button("Verify", id=f"verify-{btn_id}", variant="primary", classes="verify-btn",
+                                compact=True, tooltip="Connect to live AP and verify credentials")
+            setattr(verify_btn, "target_type", target_type)
             return Horizontal(
                 Label(f"[bold dim]{label}:[/bold dim] [black bold on lightgreen] {escape(val)} [/]", classes="key-display"),
-                Button("Copy", id=btn_id, classes="copy-btn"),
-                Button("Verify", disabled=True, classes="verify-btn", tooltip="TODO: Connect to a live AP and validate credentials"),
+                Button("Copy", id=btn_id, classes="copy-btn", compact=True),
+                verify_btn,
                 classes="key-row"
             )
 
         if self._title in ("WPS PSKs", "WPA PSKs"):
-            kg.mount(_row("PSK", cap.value or "", "copy-psk"))
+            kg.mount(_row("PSK", cap.value or "", "copy-psk", target_type=CaptureType.WPA_PSK))
         elif self._title == "WPS PINs":
-            kg.mount(_row("WPS PIN", cap.pin or "", "copy-pin"))
+            kg.mount(_row("WPS PIN", cap.pin or "", "copy-pin", target_type=CaptureType.WPS_PIN))
         elif self._title == "WEP KEYs":
-            kg.mount(_row("WEP Hex Key", cap.value or "", "copy-hex"))
+            kg.mount(_row("WEP Hex Key", cap.value or "", "copy-hex", target_type=CaptureType.WEP))
             ascii_val = _hex_to_ascii(cap.value)
             if ascii_val:
-                kg.mount(_row("ASCII Key", ascii_val, "copy-ascii"))
+                kg.mount(_row("ASCII Key", ascii_val, "copy-ascii", target_type=CaptureType.WEP))
         elif self._title == "HASHCAT":
             text = self.app.vault.capture_payload(cap)
             hs = sum(1 for ln in text.splitlines() if ln.startswith("WPA*02*"))
@@ -191,6 +204,7 @@ class _CapturePanel(VerticalGroup):
 
     @on(Select.Changed)
     def _file_changed(self, event: Select.Changed) -> None:
+        self.cancel_verification()
         cap = self._by_path.get(event.value)
         if cap:
             self._update_display(cap)
@@ -213,6 +227,40 @@ class _CapturePanel(VerticalGroup):
             return
         self.app.copy_to_clipboard(text)
         self.notify("Copied to clipboard")
+
+    @on(Button.Pressed, ".verify-btn")
+    def _verify(self, event: Button.Pressed) -> None:
+        event.stop()
+        cap = self._by_path.get(self.query_one(Select).value)
+        if not cap:
+            return
+        btn = event.button
+        self.cancel_verification()
+        target_type = getattr(btn, "target_type", None)
+        self._verify_task = asyncio.create_task(self._run_verify(cap, btn, target_type))
+
+    async def _run_verify(self, cap: PersistedCapture, btn: Button, target_type: Optional[CaptureType]) -> None:
+        from wifit3.campaigns.live_check import LiveKeyVerifier, VerifyStatus
+
+        btn.disabled = True
+        btn.label = "Verifying…"
+        verifier = LiveKeyVerifier()
+        try:
+            res = await verifier.verify_credential(cap, self.app.array, target_type=target_type)
+            if res.status == VerifyStatus.SUCCESS:
+                self.notify(res.body, title=res.title, severity="information")
+            elif res.status == VerifyStatus.INCORRECT:
+                self.notify(res.body, title=res.title, severity="warning")
+            else:
+                self.notify(res.body, title=res.title, severity="error")
+        except asyncio.CancelledError:
+            pass
+        except Exception as exc:
+            logger.exception("Error during live verification")
+            self.notify(f"Verification error: {exc}", title="Verify", severity="error")
+        finally:
+            btn.label = "Verify"
+            btn.disabled = False
 
     @on(Button.Pressed, ".delete")
     def _delete(self, event: Button.Pressed) -> None:
@@ -305,7 +353,13 @@ class VaultItemView(Vertical):
 
     _state: reactive[tuple] = reactive(("", None, ()), recompose=True)
 
+    def cancel_verification(self) -> None:
+        """Cancel any running verification tasks on active capture panels."""
+        for panel in self.query(_CapturePanel):
+            panel.cancel_verification()
+
     def load(self, bssid: str, ssid: Optional[str], captures: List[PersistedCapture]) -> None:
+        self.cancel_verification()
         self._state = (bssid, ssid, tuple(captures))
 
     def compose(self) -> ComposeResult:
