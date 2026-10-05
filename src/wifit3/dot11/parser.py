@@ -25,7 +25,8 @@ from wifit3.dot11.wsc.messages import (
 )
 from wifit3.dot11.packet import (
     Packet, BeaconPacket, EapolPacket, WepDataPacket, AssocRequestPacket,
-    AuthPacket, AssocRespPacket, DeauthPacket, ProbeReqPacket,
+    AuthPacket, AssocRespPacket, DeauthPacket, FilsDiscoveryPacket, ProbeReqPacket,
+    SsidHint,
 )
 
 
@@ -46,6 +47,7 @@ class WlanFrameParser:
     SUBTYPE_DISASSOC = 0x0a
     SUBTYPE_AUTH = 0x0b
     SUBTYPE_DEAUTH = 0x0c
+    SUBTYPE_ACTION = 0x0d
 
     @classmethod
     def parse_80211_frame(cls, frame: bytes, rssi: int) -> Optional["Packet"]:
@@ -125,7 +127,8 @@ class WlanFrameParser:
             for key in ("channel", "rsn_ie_raw", "wps", "wps_locked", "wps_version",
                         "wps_state", "wps_config_methods", "wps_device_password_id",
                         "wps_selected_registrar", "wsc_manufacturer", "wsc_model_name",
-                        "wsc_model_number", "wsc_device_name", "wsc_device_type"):
+                        "wsc_model_number", "wsc_device_name", "wsc_device_type",
+                        "ssid_hints"):
                 if key in tags:
                     fields[key] = tags[key]
             return BeaconPacket(**base, **fields)
@@ -167,7 +170,112 @@ class WlanFrameParser:
             reason = struct.unpack("<H", frame[24:26])[0] if len(frame) >= 26 else None
             label = "deauth" if subtype == cls.SUBTYPE_DEAUTH else f"mgmt_{subtype}"
             return DeauthPacket(**base, type=label, reason=reason)
+        if subtype == cls.SUBTYPE_ACTION:
+            fils = cls._parse_fils_discovery(frame)
+            if fils is not None:
+                return FilsDiscoveryPacket(**base, type="fils_discovery", **fils)
         return Packet(**base, type=f"mgmt_{subtype}")
+
+    @classmethod
+    def _parse_fils_discovery(cls, frame: bytes) -> Optional[Dict[str, Any]]:
+        if len(frame) < 39 or frame[24:26] != b"\x04\x22":
+            return None
+        control = int.from_bytes(frame[26:28], "little")
+        if control & 0x0040:
+            if len(frame) < 42:
+                return None
+            return {"short_ssid": int.from_bytes(frame[38:42], "little")}
+        length = (control & 0x001f) + 1
+        ssid = cls._decode_ssid(frame[38:38 + length])
+        return {"ssid": ssid} if ssid is not None else None
+
+    @staticmethod
+    def _decode_ssid(value: bytes) -> Optional[str]:
+        if not value or len(value) > 32:
+            return None
+        if any(byte < 0x20 and byte not in (0x09, 0x0a, 0x0d) for byte in value):
+            return None
+        decoded = value.decode("utf-8", errors="ignore")
+        return decoded or None
+
+    @staticmethod
+    def _derive_nontransmitted_bssid(transmitted_bssid: bytes, max_bssid: int,
+                                     index: int) -> Optional[str]:
+        if len(transmitted_bssid) != 6 or not 1 <= max_bssid <= 8 or index == 0:
+            return None
+        mask = (1 << max_bssid) - 1
+        address = int.from_bytes(transmitted_bssid, "big")
+        derived = (address & ~mask) | (((address & mask) + index) & mask)
+        return mac_to_str(derived.to_bytes(6, "big"))
+
+    @classmethod
+    def _parse_multiple_bssid(cls, data: bytes, transmitted_bssid: bytes) -> List[SsidHint]:
+        if len(data) < 3:
+            return []
+        max_bssid = data[0]
+        hints: List[SsidHint] = []
+        for subelement_id, profile, _raw in iter_information_elements(data, start=1):
+            if subelement_id != 0:
+                continue
+            ssid = None
+            index = None
+            for tag_id, value, _nested_raw in iter_information_elements(profile):
+                if tag_id == 0 and ssid is None:
+                    ssid = cls._decode_ssid(value)
+                elif tag_id == 85 and value:
+                    index = value[0]
+            bssid = cls._derive_nontransmitted_bssid(
+                transmitted_bssid, max_bssid, index or 0,
+            )
+            if bssid is not None and ssid is not None:
+                hints.append(SsidHint(bssid=bssid, method="mbssid", ssid=ssid))
+        return hints
+
+    @classmethod
+    def _parse_reduced_neighbor_report(cls, data: bytes,
+                                       advertised_ssid: Optional[str]) -> List[SsidHint]:
+        hints: List[SsidHint] = []
+        offset = 0
+        while offset + 4 <= len(data):
+            header = data[offset]
+            info_length = data[offset + 1]
+            count = ((header >> 4) & 0x0f) + 1
+            offset += 4
+            total = info_length * count
+            if info_length < 7 or offset + total > len(data):
+                break
+            for index in range(count):
+                info = data[offset + index * info_length:offset + (index + 1) * info_length]
+                bssid = mac_to_str(info[1:7])
+                short_ssid = int.from_bytes(info[7:11], "little") if info_length >= 11 else None
+                if info_length >= 12:
+                    params = info[11]
+                elif info_length in (8, 9):
+                    params = info[7]
+                else:
+                    params = 0
+                if params & 0x02 and advertised_ssid:
+                    hints.append(SsidHint(
+                        bssid=bssid, method="rnr_same_ssid", ssid=advertised_ssid,
+                    ))
+                elif short_ssid is not None:
+                    hints.append(SsidHint(
+                        bssid=bssid, method="rnr_short_ssid", short_ssid=short_ssid,
+                    ))
+            offset += total
+        return hints
+
+    @classmethod
+    def _parse_owe_transition(cls, data: bytes) -> Optional[SsidHint]:
+        if len(data) < 12 or data[:4] != b"\x50\x6f\x9a\x1c":
+            return None
+        length = data[10]
+        if 11 + length > len(data):
+            return None
+        ssid = cls._decode_ssid(data[11:11 + length])
+        if ssid is None:
+            return None
+        return SsidHint(bssid=mac_to_str(data[4:10]), method="owe_transition", ssid=ssid)
 
     @classmethod
     def _parse_data(cls, frame: bytes, fc1: int, subtype: int, base: Dict[str, Any]) -> "Packet":
@@ -507,6 +615,7 @@ class WlanFrameParser:
         # so honor only the first occurrence.
         seen_ssid = False
         wps_payloads: List[bytes] = []
+        ssid_hints: List[SsidHint] = []
 
         for tag_id, tag_data, raw_elem in iter_information_elements(frame, start=ptr):
             if tag_id == 0 and not seen_ssid: # SSID (only the first)
@@ -514,10 +623,10 @@ class WlanFrameParser:
                 if len(tag_data) == 0:
                     parsed["ssid"] = "<hidden>"
                 elif len(tag_data) <= 32:
-                    # Validate against completely corrupted text
-                    if any(b < 0x20 and b not in (0x09, 0x0a, 0x0d) for b in tag_data):
-                        return None # Corrupt frame masquerading as valid
-                    parsed["ssid"] = tag_data.decode('utf-8', errors='ignore')
+                    decoded_ssid = cls._decode_ssid(tag_data)
+                    if decoded_ssid is None:
+                        return None
+                    parsed["ssid"] = decoded_ssid
             elif tag_id == 3: # DS Parameter Set (Channel)
                 if len(tag_data) == 1:
                     channel_ds = tag_data[0]
@@ -548,6 +657,15 @@ class WlanFrameParser:
                     transition_mode = has_wpa3 and bool(
                         cls._PSK_SUITES.intersection(akm_suites)
                     )
+            elif tag_id == 71:
+                ssid_hints.extend(cls._parse_multiple_bssid(tag_data, frame[16:22]))
+            elif tag_id == 201:
+                advertised_ssid = parsed.get("ssid")
+                if advertised_ssid == "<hidden>":
+                    advertised_ssid = None
+                ssid_hints.extend(
+                    cls._parse_reduced_neighbor_report(tag_data, advertised_ssid)
+                )
             elif tag_id == 221: # Vendor Specific
                 if len(tag_data) >= 4:
                     oui = tag_data[:3]
@@ -558,9 +676,14 @@ class WlanFrameParser:
                         elif oui_type == 4: # WPS
                             # tag_data = OUI(3) + type(1) + WPS TLVs.
                             wps_payloads.append(tag_data[4:])
+                    owe_hint = cls._parse_owe_transition(tag_data)
+                    if owe_hint is not None:
+                        ssid_hints.append(owe_hint)
 
         if wps_payloads:
             parsed.update(cls._parse_wps_ie(b"".join(wps_payloads)))
+        if ssid_hints:
+            parsed["ssid_hints"] = ssid_hints
 
         # Channel preference: DS Param (tag 3, 2.4 GHz authoritative) → HT Op (tag 61, the
         # only cross-band source; 5 GHz often omits DS per 802.11-2020 9.4.2.3) → VHT Op
