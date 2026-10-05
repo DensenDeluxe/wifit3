@@ -192,6 +192,124 @@ def test_ingest_drops_stray_beacon_but_keeps_the_real_ap():
     assert list(a.access_points) == ["aa:bb:cc:dd:ee:ff"]
 
 
+def test_decloak_probe_context_accepts_named_broadcast_probe_on_listener_channel():
+    card = FakeIface("wlan0", [1, 6, 11])
+    card.current_channel = 1
+    array = _pool(card)
+    bssid = "aa:bb:cc:dd:ee:ff"
+    card.emit(pkt({"type": "beacon", "bssid": bssid, "source": bssid,
+                   "dest": "ff:ff:ff:ff:ff:ff", "rssi": -60, "ssid": "<hidden>",
+                   "channel": 6, "raw": _raw()}))
+    card.emit(pkt({"type": "data", "to_ds": True, "bssid": bssid,
+                   "source": "12:22:33:44:55:66", "dest": bssid,
+                   "rssi": -45, "raw": _raw(seq=b"\x08\x00")}))
+    array.register_decloak_probe_context(bssid, card, 1)
+    card.emit(pkt({"type": "probe_req", "bssid": "ff:ff:ff:ff:ff:ff",
+                   "source": "12:22:33:44:55:66", "dest": "ff:ff:ff:ff:ff:ff",
+                   "rssi": -45, "ssid": "Real_Name", "raw": _raw(seq=b"\x10\x00")}))
+    assert array.access_points[bssid].ssid == "Real_Name"
+    assert array.access_points[bssid].decloak_method == "probe_req"
+
+
+def test_decloak_probe_context_rejects_broadcast_probe_from_unrelated_client():
+    card = FakeIface("wlan0", [1, 6, 11])
+    card.current_channel = 1
+    array = _pool(card)
+    bssid = "aa:bb:cc:dd:ee:ff"
+    card.emit(pkt({"type": "beacon", "bssid": bssid, "source": bssid,
+                   "dest": "ff:ff:ff:ff:ff:ff", "rssi": -60, "ssid": "<hidden>",
+                   "channel": 6, "raw": _raw()}))
+    array.register_decloak_probe_context(bssid, card, 1)
+    card.emit(pkt({"type": "probe_req", "bssid": "ff:ff:ff:ff:ff:ff",
+                   "source": "12:22:33:44:55:66", "dest": "ff:ff:ff:ff:ff:ff",
+                   "rssi": -45, "ssid": "CoffeeShop", "raw": _raw(seq=b"\x10\x00")}))
+    assert array.access_points[bssid].ssid is None
+
+
+def test_decloak_probe_context_confirms_new_broadcast_client_on_target_auth():
+    card = FakeIface("wlan0", [1, 6, 11])
+    card.current_channel = 1
+    array = _pool(card)
+    bssid = "aa:bb:cc:dd:ee:ff"
+    client = "12:22:33:44:55:66"
+    card.emit(pkt({"type": "beacon", "bssid": bssid, "source": bssid,
+                   "dest": "ff:ff:ff:ff:ff:ff", "rssi": -60, "ssid": "<hidden>",
+                   "channel": 6, "raw": _raw()}))
+    array.register_decloak_probe_context(bssid, card, 1)
+    card.emit(pkt({"type": "probe_req", "bssid": "ff:ff:ff:ff:ff:ff",
+                   "source": client, "dest": "ff:ff:ff:ff:ff:ff", "rssi": -45,
+                   "ssid": "Real_Name", "raw": _raw(seq=b"\x10\x00")}))
+    assert array.access_points[bssid].ssid is None
+
+    card.emit(pkt({"type": "mgmt_11", "bssid": bssid, "source": client,
+                   "dest": bssid, "rssi": -45, "raw": _raw(seq=b"\x20\x00")}))
+
+    assert array.access_points[bssid].ssid == "Real_Name"
+    assert array.access_points[bssid].decloak_method == "probe_req"
+
+
+def test_decloak_probe_context_does_not_cross_correlate_clients():
+    card = FakeIface("wlan0", [1, 6, 11])
+    card.current_channel = 1
+    array = _pool(card)
+    bssid = "aa:bb:cc:dd:ee:ff"
+    card.emit(pkt({"type": "beacon", "bssid": bssid, "source": bssid,
+                   "dest": "ff:ff:ff:ff:ff:ff", "rssi": -60, "ssid": "<hidden>",
+                   "channel": 6, "raw": _raw()}))
+    array.register_decloak_probe_context(bssid, card, 1)
+    card.emit(pkt({"type": "probe_req", "bssid": "ff:ff:ff:ff:ff:ff",
+                   "source": "12:22:33:44:55:66", "dest": "ff:ff:ff:ff:ff:ff",
+                   "rssi": -45, "ssid": "Unrelated", "raw": _raw(seq=b"\x10\x00")}))
+    card.emit(pkt({"type": "mgmt_11", "bssid": bssid, "source": "12:22:33:44:55:67",
+                   "dest": bssid, "rssi": -45, "raw": _raw(seq=b"\x20\x00")}))
+
+    assert array.access_points[bssid].ssid is None
+
+
+def test_decloak_probe_context_rejects_ambiguous_broadcast_names():
+    card = FakeIface("wlan0", [1, 6, 11])
+    card.current_channel = 1
+    array = _pool(card)
+    bssid = "aa:bb:cc:dd:ee:ff"
+    client = "12:22:33:44:55:66"
+    card.emit(pkt({"type": "beacon", "bssid": bssid, "source": bssid,
+                   "dest": "ff:ff:ff:ff:ff:ff", "rssi": -60, "ssid": "<hidden>",
+                   "channel": 6, "raw": _raw()}))
+    array.register_decloak_probe_context(bssid, card, 1)
+    for sequence, ssid in ((b"\x10\x00", "Network-A"), (b"\x20\x00", "Network-B")):
+        card.emit(pkt({"type": "probe_req", "bssid": "ff:ff:ff:ff:ff:ff",
+                       "source": client, "dest": "ff:ff:ff:ff:ff:ff", "rssi": -45,
+                       "ssid": ssid, "raw": _raw(seq=sequence)}))
+    card.emit(pkt({"type": "mgmt_11", "bssid": bssid, "source": client,
+                   "dest": bssid, "rssi": -45, "raw": _raw(seq=b"\x30\x00")}))
+
+    assert array.access_points[bssid].ssid is None
+
+
+def test_decloak_probe_context_rejects_wrong_channel_and_unregisters_cleanly():
+    card = FakeIface("wlan0", [1, 6, 11])
+    card.current_channel = 6
+    array = _pool(card)
+    bssid = "aa:bb:cc:dd:ee:ff"
+    card.emit(pkt({"type": "beacon", "bssid": bssid, "source": bssid,
+                   "dest": "ff:ff:ff:ff:ff:ff", "rssi": -60, "ssid": "<hidden>",
+                   "channel": 6, "raw": _raw()}))
+    array.register_decloak_probe_context(bssid, card, 1)
+    probe = pkt({"type": "probe_req", "bssid": bssid,
+                 "source": "12:22:33:44:55:66", "dest": bssid,
+                 "rssi": -45, "ssid": "Wrong", "raw": _raw(seq=b"\x10\x00")})
+    card.emit(probe)
+    assert array.access_points[bssid].ssid is None
+
+    array.unregister_decloak_probe_context(bssid, card)
+    card.current_channel = 1
+    probe = pkt({"type": "probe_req", "bssid": bssid,
+                 "source": "12:22:33:44:55:66", "dest": bssid,
+                 "rssi": -45, "ssid": "StillWrong", "raw": _raw(seq=b"\x20\x00")})
+    card.emit(probe)
+    assert array.access_points[bssid].ssid is None
+
+
 def test_ingest_drops_our_own_self_mac_transmissions():
     """A pooled RX card hears the TX card's WEP replay (ToDS) over the air; a frame whose transmitter
     (Addr2) is our own fake STA must be dropped so it doesn't inflate the IV rate."""

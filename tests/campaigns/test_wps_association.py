@@ -31,11 +31,14 @@ class _RespIface:
     """Replies to our auth_req with an Auth Resp and our assoc_req with an Assoc
     Resp, by invoking the registered rx callback (the AP 'answering')."""
 
-    def __init__(self, *, answer_auth: bool = True, answer_assoc: bool = True):
+    def __init__(self, *, answer_auth: bool = True, answer_assoc: bool = True,
+                 auth_status: int = 0, assoc_status: int = 0):
         self.current_channel = 1
         self._cb = None
         self._answer_auth = answer_auth
         self._answer_assoc = answer_assoc
+        self._auth_status = auth_status
+        self._assoc_status = assoc_status
         self.sent = []
 
     def register_rx_callback(self, cb):
@@ -54,9 +57,9 @@ class _RespIface:
         self.sent.append(bytes(frame))
         subtype = (frame[0] & 0xF0) >> 4
         if subtype == 0x0B and self._answer_auth and self._cb:        # auth req
-            self._cb(WlanFrameParser.parse_80211_frame(_auth_resp(), -40))
+            self._cb(WlanFrameParser.parse_80211_frame(_auth_resp(self._auth_status), -40))
         elif subtype == 0x00 and self._answer_assoc and self._cb:     # assoc req
-            self._cb(WlanFrameParser.parse_80211_frame(_assoc_resp(), -40))
+            self._cb(WlanFrameParser.parse_80211_frame(_assoc_resp(self._assoc_status), -40))
         return True
 
 
@@ -83,6 +86,26 @@ async def test_falls_back_to_assoc_when_no_auth_resp():
     assert _subtypes(iface) == [0x0B, 0x00]
 
 
+async def test_explicit_auth_rejection_does_not_send_assoc():
+    iface = _RespIface(auth_status=1)
+    a = Association(iface, _BSSID, "Net", 1, our_mac=_US)
+    a.start()
+
+    assert await a.associate(attempts=1) is False
+    assert a.auth_status == 1
+    assert _subtypes(iface) == [0x0B]
+
+
+async def test_explicit_assoc_rejection_finishes_without_timeout_retries():
+    iface = _RespIface(assoc_status=18)
+    a = Association(iface, _BSSID, "Net", 1, our_mac=_US)
+    a.start()
+
+    assert await a.associate(attempts=1) is False
+    assert a.assoc_status == 18
+    assert _subtypes(iface) == [0x0B, 0x00]
+
+
 def _deauth(reason: int = 6) -> bytes:
     # mgmt/deauth (0xC0); addr1=us, addr2/3=AP; reason (@24:26).
     return (b"\xc0\x00\x00\x00" + _US + _BSSID_B + _BSSID_B + b"\x00\x00"
@@ -100,9 +123,11 @@ def test_rx_cb_sets_auth_ok_on_status0_resp():
     a._active = True
     a._rx_cb(WlanFrameParser.parse_80211_frame(_auth_resp(0), -40))
     assert a._auth_ok is True
+    assert a.auth_status == 0
     a._auth_ok = False
     a._rx_cb(WlanFrameParser.parse_80211_frame(_auth_resp(1), -40))            # status != 0 → not ok, records reason
     assert a._auth_ok is False
+    assert a.auth_status == 1
     assert "Auth rejected" in (a.fail_reason or "")
     assert "unspecified-failure" in (a.fail_reason or "")
 
@@ -112,7 +137,21 @@ def test_rx_cb_decodes_assoc_rejected_status():
     a._active = True
     a._rx_cb(WlanFrameParser.parse_80211_frame(_assoc_resp(18), -40))
     assert a._assoc_ok is False
+    assert a.assoc_status == 18
     assert "basic-rates-unsupported" in (a.fail_reason or "")
+
+
+def test_rx_cb_ignores_response_from_another_bssid():
+    a = Association(_RespIface(), _BSSID, "Net", 1, our_mac=_US)
+    a._active = True
+    frame = bytearray(_assoc_resp())
+    frame[10:16] = b"\xaa\xbb\xcc\xdd\xee\xff"
+    frame[16:22] = b"\xaa\xbb\xcc\xdd\xee\xff"
+
+    a._rx_cb(WlanFrameParser.parse_80211_frame(bytes(frame), -40))
+
+    assert a.assoc_status is None
+    assert a._assoc_ok is False
 
 
 def test_rx_cb_decodes_deauth_and_disassoc_reason():

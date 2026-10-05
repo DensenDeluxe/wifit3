@@ -361,8 +361,10 @@ class DeviceManager:
     functions; ``devices``/``device`` are re-exposed as thin delegating methods so the app and
     ``DeviceWatch`` can call ``dm.devices()``."""
 
-    def __init__(self, app, *, setup: Setup | None = None, prompter=None) -> None:
+    def __init__(self, app, *, setup: Setup | None = None, prompter=None,
+                 on_decloak: Optional[Callable[[str, str], None]] = None) -> None:
         self.app = app
+        self._on_decloak = on_decloak
         self.setup = setup or Setup.for_platform()
         if prompter is None:
             from wifit3.ui.bringup_prompter import BringupPrompter
@@ -452,7 +454,7 @@ class DeviceManager:
 
     def _ensure_array(self) -> WlanArray:
         if self.app.array is None:
-            array = WlanArray()
+            array = WlanArray(on_decloak=self._on_decloak)
             array.register_disconnect_callback(self.app.notify_device_lost)
             self.app.array = array
         return self.app.array

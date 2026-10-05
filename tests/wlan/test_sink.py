@@ -4,9 +4,11 @@ WlanSink is pure: it takes parsed Packets plus the receiving card id and builds 
 registry. These are the picture assertions that used to live on WlanInterface, re-driven through
 ``sink.update(pkt, card_id)``, plus the multicard-specific per-card signal behavior."""
 
+import binascii
 import struct
 
 from wifit3.dot11.mac import str_to_mac
+from wifit3.dot11.packet import SsidHint
 from wifit3.dot11.wsc import messages as WSC
 from wifit3.models import IdKey, IdSource
 from wifit3.wlan.sink import WlanSink
@@ -174,6 +176,59 @@ def test_decloak_via_probe_resp():
     assert ap.ssid == "Now_Visible" and ap.decloak_method == "probe_resp"
 
 
+def test_mbssid_hint_decloaks_an_observed_hidden_bssid():
+    target = "aa:bb:cc:dd:ee:01"
+    s = WlanSink()
+    s.update(_beacon({"bssid": target, "source": target, "ssid": "<hidden>"}), W0)
+    s.update(_beacon({"ssid_hints": [
+        SsidHint(bssid=target, method="mbssid", ssid="Nontransmitted")
+    ]}), W0)
+
+    assert s.access_points[target].ssid == "Nontransmitted"
+    assert s.access_points[target].decloak_method == "mbssid"
+
+
+def test_ssid_hint_waits_until_target_bssid_is_observed():
+    target = "aa:bb:cc:dd:ee:02"
+    s = WlanSink()
+    s.update(_beacon({"ssid_hints": [
+        SsidHint(bssid=target, method="owe_transition", ssid="Open-Partner")
+    ]}), W0)
+    assert target not in s.access_points
+
+    s.update(_beacon({"bssid": target, "source": target, "ssid": "<hidden>"}), W0)
+
+    assert s.access_points[target].ssid == "Open-Partner"
+    assert s.access_points[target].decloak_method == "owe_transition"
+
+
+def test_short_ssid_hint_resolves_after_matching_ssid_is_seen():
+    target = "aa:bb:cc:dd:ee:03"
+    short_ssid = binascii.crc32(b"SixGHz") & 0xffffffff
+    s = WlanSink()
+    s.update(_beacon({"bssid": target, "source": target, "ssid": "<hidden>"}), W0)
+    s.update(_beacon({"ssid_hints": [
+        SsidHint(bssid=target, method="rnr_short_ssid", short_ssid=short_ssid)
+    ]}), W0)
+    assert s.access_points[target].ssid is None
+
+    known = "aa:bb:cc:dd:ee:04"
+    s.update(_beacon({"bssid": known, "source": known, "ssid": "SixGHz"}), W0)
+
+    assert s.access_points[target].ssid == "SixGHz"
+    assert s.access_points[target].decloak_method == "rnr_short_ssid"
+
+
+def test_passive_hint_does_not_overwrite_direct_beacon_ssid():
+    s = WlanSink()
+    s.update(_beacon({"ssid": "Authoritative"}), W0)
+    s.update(_beacon({"ssid": "Authoritative", "ssid_hints": [
+        SsidHint(bssid=BSSID, method="rnr_same_ssid", ssid="Wrong")
+    ]}), W0)
+
+    assert s.access_points[BSSID].ssid == "Authoritative"
+
+
 def test_assoc_req_stamps_client_akm():
     s = WlanSink()
     client = "12:22:33:44:55:66"
@@ -202,6 +257,52 @@ def test_decloak_via_reassoc_req():
                   "dest": BSSID, "rssi": -45, "ssid": "Real_Name"}), W0)
     ap = s.access_points[BSSID]
     assert ap.ssid == "Real_Name" and ap.decloak_method == "reassoc_req"
+
+
+def test_probe_req_without_campaign_context_does_not_decloak():
+    s = WlanSink()
+    s.update(pkt({"type": "beacon", "bssid": BSSID, "rssi": -60, "ssid": "<hidden>"}), W0)
+    assert s.access_points[BSSID].ssid is None
+    s.update(pkt({"type": "probe_req", "bssid": BSSID, "source": "12:22:33:44:55:66",
+                  "dest": BSSID, "rssi": -45, "ssid": "Real_Name"}), W0)
+    ap = s.access_points[BSSID]
+    assert ap.ssid is None and ap.decloak_method is None
+    assert "Real_Name" in s.clients["12:22:33:44:55:66"].probed_ssids
+
+
+def test_campaign_context_can_decloak_from_probe_req():
+    s = WlanSink()
+    s.update(pkt({"type": "beacon", "bssid": BSSID, "rssi": -60, "ssid": "<hidden>"}), W0)
+    assert s.decloak_from_probe_context(BSSID, "Real_Name") is True
+    ap = s.access_points[BSSID]
+    assert ap.ssid == "Real_Name" and ap.decloak_method == "probe_req"
+
+
+def test_on_decloak_hook_fires_once_on_hidden_to_real():
+    seen = []
+    s = WlanSink(on_decloak=lambda b, ssid: seen.append((b, ssid)))
+    s.update(pkt({"type": "beacon", "bssid": BSSID, "rssi": -60, "ssid": "<hidden>"}), W0)
+    s.update(pkt({"type": "probe_resp", "bssid": BSSID, "rssi": -60, "ssid": "Now_Visible"}), W0)
+    s.update(pkt({"type": "probe_resp", "bssid": BSSID, "rssi": -60, "ssid": "Now_Visible"}), W0)
+    assert seen == [(BSSID, "Now_Visible")]
+
+
+def test_directed_probe_req_does_not_clobber_a_known_ssid():
+    s = WlanSink()
+    s.update(_beacon({"ssid": "Real_Name"}), W0)
+    s.update(pkt({"type": "probe_req", "bssid": BSSID, "source": "12:22:33:44:55:66",
+                  "dest": BSSID, "rssi": -45, "ssid": "Someone_Elses"}), W0)
+    ap = s.access_points[BSSID]
+    assert ap.ssid == "Real_Name" and ap.decloak_method is None
+
+
+def test_stronger_ap_evidence_corrects_contextual_probe_name():
+    s = WlanSink()
+    s.update(pkt({"type": "beacon", "bssid": BSSID, "rssi": -60, "ssid": "<hidden>"}), W0)
+    s.decloak_from_probe_context(BSSID, "Unrelated")
+    s.update(pkt({"type": "probe_resp", "bssid": BSSID, "rssi": -60,
+                  "ssid": "Real_Name"}), W0)
+    assert s.access_points[BSSID].ssid == "Real_Name"
 
 
 def test_from_ds_client_is_receiver_not_addr3_origin():

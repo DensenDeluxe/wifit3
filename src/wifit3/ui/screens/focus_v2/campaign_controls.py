@@ -4,7 +4,9 @@ from __future__ import annotations
 from typing import Optional
 
 from wifit3.campaigns.campaign import Campaign
+from wifit3.campaigns.csa_decloak import CsaDecloakCampaign
 from wifit3.campaigns.wep import WepCampaign
+from wifit3.campaigns.decloak import DecloakCampaign
 from wifit3.campaigns.eviltwin import EvilTwinCampaign, EvilTwinInput
 
 
@@ -18,21 +20,22 @@ class CampaignControls:
         return self._campaign
 
     def start(self, campaign: type[Campaign], array, ap, *,
-              log=None, evil_input: Optional[EvilTwinInput] = None) -> Optional[Campaign]:
-        """Construct and run one campaign, None if another campaign is active.
-
-        Constructors differ per campaign (intentionally not unified): wep takes
-        ``log_callback``, EvilTwin takes its ``evil_input`` dataclass, the rest take ``log``.
-        """
+              log=None, evil_input: Optional[EvilTwinInput] = None,
+              candidates: Optional[list[str]] = None, csa=None) -> Optional[Campaign]:
         if Campaign.active is not None or self._campaign is not None:
             return None
         if campaign is WepCampaign:
             inst = campaign(array, ap, log_callback=log)
         elif campaign is EvilTwinCampaign:
             inst = campaign(array, ap, evil_input)
+        elif campaign is DecloakCampaign:
+            inst = campaign(array, ap, candidates=candidates, log=log)
+        elif campaign is CsaDecloakCampaign:
+            inst = campaign(array, ap, csa, log=log)
         else:
             inst = campaign(array, ap, log=log)
-        inst.run()
+        if not inst.run():
+            return None
         self._campaign = inst
         return inst
 

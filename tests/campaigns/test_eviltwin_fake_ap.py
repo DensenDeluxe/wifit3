@@ -1,12 +1,14 @@
 """FakeAP responder as a state machine: feed parsed client frames, assert responses + stats."""
 import asyncio
 
+import pytest
+
 from wifit3.campaigns.eviltwin import FakeAP, ClientPhase
 from wifit3.dot11.parser import WlanFrameParser
 from wifit3.dot11.probe import probe_req
 from wifit3.dot11.auth_assoc import auth_req, assoc_req
 from wifit3.dot11.eapol import eapol_key, data_header, LLC_SNAP_EAPOL
-from wifit3.dot11.ie import GENERIC_RSN_IE
+from wifit3.dot11.ie import GENERIC_RSN_IE, SUPPORTED_RATES_5GHZ, iter_information_elements
 
 _BSSID = bytes.fromhex("9483c48c3f78")
 _CLIENT = bytes.fromhex("02aabbccddee")
@@ -20,6 +22,7 @@ class FakeIface:
     def __init__(self, channel: int = 1):
         self.sent: list[bytes] = []
         self.current_channel = channel
+        self.fake_mac_clears = 0
 
     async def send_no_wait(self, frame: bytes) -> bool:
         self.sent.append(frame)
@@ -33,7 +36,7 @@ class FakeIface:
         return ":".join(f"{b:02x}" for b in bssid)
 
     async def clear_fake_mac(self) -> None:
-        pass
+        self.fake_mac_clears += 1
 
 
 def _parse(frame: bytes):
@@ -45,8 +48,9 @@ def _m2(bssid: bytes, client: bytes, snonce: bytes) -> bytes:
     return data_header(to_ds=True, bssid=bssid, client=client) + LLC_SNAP_EAPOL + payload
 
 
-def _fakeap(m1_sink=None):
-    return FakeAP(FakeIface(), _BSSID, _SSID, 1, twin_beacon=bytes(60), record_m1=m1_sink)
+def _fakeap(m1_sink=None, channel: int = 1):
+    return FakeAP(FakeIface(), _BSSID, _SSID, channel,
+                  twin_beacon=bytes(60), record_m1=m1_sink)
 
 
 async def _flush():
@@ -96,6 +100,24 @@ async def test_auth_assoc_drives_m1_and_progress():
     assert any(f[:2] == b"\x10\x00" for f in fap.iface.sent)    # assoc resp went out
 
 
+async def test_5ghz_probe_and_assoc_responses_use_ofdm_rates():
+    fap = _fakeap(channel=36)
+    fap.on_rx(_parse(probe_req(_BSSID, _CLIENT, _SSID, channel=36)))
+    fap.on_rx(_parse(assoc_req(
+        _BSSID, _CLIENT, _SSID, GENERIC_RSN_IE, channel=36,
+    )))
+    await _flush()
+
+    probe = next(frame for frame in fap.iface.sent if frame[:2] == b"\x50\x00")
+    assoc = next(frame for frame in fap.iface.sent if frame[:2] == b"\x10\x00")
+    probe_ies = {tag_id: body for tag_id, body, _raw
+                 in iter_information_elements(probe, start=36)}
+    assoc_ies = {tag_id: body for tag_id, body, _raw
+                 in iter_information_elements(assoc, start=30)}
+    assert probe_ies[1] == SUPPORTED_RATES_5GHZ and 50 not in probe_ies
+    assert assoc_ies[1] == SUPPORTED_RATES_5GHZ and 50 not in assoc_ies
+
+
 async def test_m2_marks_client_once():
     fap = _fakeap()
     fap.on_rx(_parse(auth_req(_BSSID, _CLIENT)))
@@ -112,3 +134,30 @@ async def test_auth_to_a_different_bssid_ignored():
     fap.on_rx(_parse(auth_req(_OTHER, _CLIENT)))
     await _flush()
     assert fap.stats.auth == 0 and fap.stats.clients == {} and fap.iface.sent == []
+
+
+async def test_start_rejects_channel_tune_failure():
+    fap = _fakeap(channel=6)
+    fap.iface.set_channel = lambda *_args, **_kwargs: asyncio.sleep(0, result=False)
+    with pytest.raises(RuntimeError, match="failed to tune"):
+        await fap.start()
+    assert fap._beacon_task is None
+
+
+async def test_start_rejects_failed_active_monitor():
+    fap = _fakeap()
+    fap.iface.set_fake_mac = lambda *_args, **_kwargs: asyncio.sleep(0, result=None)
+    with pytest.raises(RuntimeError, match="active monitor"):
+        await fap.start()
+    assert fap._beacon_task is None
+
+
+async def test_beacon_injection_failure_surfaces_and_still_clears_fake_mac():
+    fap = _fakeap()
+    fap.iface.send_no_wait = lambda *_args, **_kwargs: asyncio.sleep(0, result=False)
+    await fap.start()
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    with pytest.raises(RuntimeError, match="beacon injection failed"):
+        await fap.stop()
+    assert fap.iface.fake_mac_clears == 1

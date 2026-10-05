@@ -58,6 +58,16 @@ def test_start_blocked_when_another_owner_holds_the_radio():
     assert controls.current is None
 
 
+def test_start_does_not_track_campaign_when_run_refuses():
+    class RefusingCampaign(_StubCampaign):
+        def run(self) -> bool:
+            return False
+
+    controls = CampaignControls()
+    assert controls.start(RefusingCampaign, None, None) is None
+    assert controls.current is None
+
+
 def test_request_stop_keeps_campaign_for_reaping():
     controls = CampaignControls()
     camp = controls.start(_StubCampaign, None, None)

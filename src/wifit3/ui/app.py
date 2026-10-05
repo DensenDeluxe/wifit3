@@ -14,6 +14,7 @@ from textual.reactive import reactive
 from typing import List
 from wifit3.models.jobs import JobState, ToolCapability, ToolStatus
 from wifit3.persist.config import Config, ConfigError
+from wifit3.persist.decloak_memory import DecloakMemory
 from wifit3.persist.vault import Vault
 from wifit3.errors import WifiteDeviceLostError, WifiteFatalError
 from wifit3.device.manager import DeviceManager, Status
@@ -123,9 +124,10 @@ class WifiteApp(App):
             Config.load()
         except ConfigError as e:
             self._config_error = str(e)
+        DecloakMemory.load()
         _configure_file_logging(cli_log_level)
         self.array: Optional[WlanArray] = None
-        self.device_manager = DeviceManager(self)
+        self.device_manager = DeviceManager(self, on_decloak=DecloakMemory.remember)
         self.device_watch = DeviceWatch(device_manager=self.device_manager,
                                         on_change=self._on_devices_changed,
                                         on_fatal=self._on_usb_fatal)
@@ -352,4 +354,3 @@ def _configure_file_logging(cli_log_level: Optional[str]) -> None:
     root.addHandler(handler)
     _FILE_LOGGING_CONFIGURED = True
     logger.info(f"Logging enabled (level={logging.getLevelName(level)})")
-

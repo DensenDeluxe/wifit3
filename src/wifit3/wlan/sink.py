@@ -8,6 +8,7 @@ addition for multicard is ``card_id``: RSSI is tracked per receiving card in ``s
 the Power reading can pick the strongest antenna, while every other field (beacons, IEs, clients,
 handshakes) is updated once, on the deduplicated (novel) copy only."""
 import asyncio
+import binascii
 from collections import deque
 import logging
 import threading
@@ -22,11 +23,28 @@ from wifit3.dot11.wsc import messages as WSC
 from wifit3.dot11.wsc.identity import apply_wsc_identity
 from wifit3.dot11.packet import (
     Packet, BeaconPacket, EapolPacket, WepDataPacket, AssocRequestPacket,
+    FilsDiscoveryPacket, SsidHint,
 )
 from wifit3.wlan.packet_stats import PacketStats
 from wifit3.wlan.wep_store import WepCaptureStore
 
 logger = logging.getLogger(__name__)
+
+_SSID_EVIDENCE_STRENGTH = {
+    "probe_req": 1,
+    "assoc_req": 2,
+    "reassoc_req": 2,
+    "assoc_oracle": 2,
+    "mbssid": 2,
+    "owe_transition": 2,
+    "rnr_same_ssid": 2,
+    "rnr_short_ssid": 1,
+    "fils_short_ssid": 1,
+    "beacon": 3,
+    "fils_discovery": 3,
+    "probe_resp": 3,
+}
+_AP_ORIGINATED_SSID_EVIDENCE = frozenset(("beacon", "fils_discovery", "probe_resp"))
 
 
 def _set_result(fut, value) -> None:
@@ -54,7 +72,7 @@ class WlanSink:
     SIBLING_BIT_DIFF_MAX = 4
     SIGNAL_WINDOW_SIZE = 8
 
-    def __init__(self):
+    def __init__(self, on_decloak=None):
         self.access_points: Dict[str, AccessPoint] = {}
         self.clients: Dict[str, Client] = {}
         self.wep_store = WepCaptureStore()  # WEP IV tallying
@@ -62,6 +80,11 @@ class WlanSink:
         self.own_macs: Set[str] = set()     # MACs we transmit as; dropped at ingest, never a client
         self._waiters: list = []            # (match, future, loop) for the next_frame await-API
         self._waiters_lock = threading.Lock()
+        self._ssid_evidence_strength: Dict[str, int] = {}
+        self._pending_ssid_hints: Dict[str, List[SsidHint]] = {}
+        self._ssids_by_short: Dict[int, Set[str]] = {}
+        self._resolving_ssid_hints = False
+        self._on_decloak = on_decloak
 
     # ----- signal (per-card) -------------------------------------------------
 
@@ -99,11 +122,14 @@ class WlanSink:
             logger.trace("%s", _fmt_frame("RXFRAME", frame_type, pkt.source, pkt.dest, bssid))
 
         if not bssid or bssid == "Unknown" or bssid == "ff:ff:ff:ff:ff:ff":
+            if frame_type == "probe_req":
+                self._track_client(pkt, card_id)
             return
 
         self.packet_stats.record_rx(bssid, frame_type)  # Live packet dashboard
 
         self._on_beacon_frame(pkt, card_id, channel_hint)
+        self._on_fils_discovery_frame(pkt)
         self._on_wepdata_frame(pkt)
         self._track_client(pkt, card_id)
         self._on_eapol_frame(pkt)
@@ -155,7 +181,8 @@ class WlanSink:
         wsc_device_name = pkt.wsc_device_name
         wsc_device_type = pkt.wsc_device_type
 
-        if bssid not in self.access_points:
+        is_new_ap = bssid not in self.access_points
+        if is_new_ap:
             ap = AccessPoint(
                 bssid=bssid,
                 ssid=ssid if self._is_real_ssid(ssid) else None,
@@ -187,6 +214,9 @@ class WlanSink:
                     device_type=wsc_device_type,
                 )
             self.access_points[bssid] = ap
+            self._ssid_evidence_strength[bssid.lower()] = (
+                _SSID_EVIDENCE_STRENGTH[frame_type] if self._is_real_ssid(ssid) else 0
+            )
             self._record_ap_signal(ap, card_id, rssi)
             self._recompute_siblings_for(bssid)
             if self._is_real_ssid(ssid):
@@ -238,6 +268,14 @@ class WlanSink:
         ap = self.access_points[bssid]
         ap.last_seen = time.time()
 
+        indexed_new_ssid = self._is_real_ssid(ap.ssid) and self._index_ssid(ap.ssid)
+        for hint in pkt.ssid_hints:
+            self._apply_ssid_hint(hint)
+        if indexed_new_ssid:
+            self._retry_pending_ssid_hints()
+        elif is_new_ap:
+            self._retry_pending_ssid_hints(bssid)
+
         # Stash the latest RSNIE
         rsn_ie = pkt.rsn_ie_raw
         if rsn_ie:
@@ -254,6 +292,58 @@ class WlanSink:
                     if ap.akm_suites and not hs.akm_offered:
                         hs.akm_offered = list(ap.akm_suites)
         return True
+
+    def _on_fils_discovery_frame(self, pkt: Packet) -> bool:
+        if not isinstance(pkt, FilsDiscoveryPacket):
+            return False
+        if self._is_real_ssid(pkt.ssid):
+            self._apply_ssid_hint(SsidHint(
+                bssid=pkt.bssid, method="fils_discovery", ssid=pkt.ssid,
+            ))
+        elif pkt.short_ssid is not None:
+            self._apply_ssid_hint(SsidHint(
+                bssid=pkt.bssid, method="fils_short_ssid", short_ssid=pkt.short_ssid,
+            ))
+        return True
+
+    def _apply_ssid_hint(self, hint: SsidHint) -> bool:
+        bssid = hint.bssid.lower()
+        ap = self.access_points.get(bssid)
+        ssid = hint.ssid
+        if ssid is None and hint.short_ssid is not None:
+            matches = self._ssids_by_short.get(hint.short_ssid, set())
+            if len(matches) == 1:
+                ssid = next(iter(matches))
+        if ap is None or not self._is_real_ssid(ssid):
+            pending = self._pending_ssid_hints.setdefault(bssid, [])
+            if hint not in pending:
+                pending.append(hint)
+            return False
+        return self._decloak(ap, ssid, hint.method)
+
+    def _retry_pending_ssid_hints(self, bssid: Optional[str] = None) -> None:
+        if self._resolving_ssid_hints or not self._pending_ssid_hints:
+            return
+        self._resolving_ssid_hints = True
+        if bssid is None:
+            pending = self._pending_ssid_hints
+            self._pending_ssid_hints = {}
+        else:
+            hints = self._pending_ssid_hints.pop(bssid.lower(), [])
+            pending = {bssid.lower(): hints} if hints else {}
+        try:
+            for hints in pending.values():
+                for hint in hints:
+                    self._apply_ssid_hint(hint)
+        finally:
+            self._resolving_ssid_hints = False
+
+    def _index_ssid(self, ssid: str) -> bool:
+        short_ssid = binascii.crc32(ssid.encode("utf-8")) & 0xffffffff
+        matches = self._ssids_by_short.setdefault(short_ssid, set())
+        was_new = ssid not in matches
+        matches.add(ssid)
+        return was_new
 
     def _on_wepdata_frame(self, pkt: Packet) -> bool:
         """Route a WEP Data frame into the passive capture store."""
@@ -372,11 +462,47 @@ class WlanSink:
         ap.wps = True
         return True
 
-    def _decloak(self, ap: AccessPoint, ssid: str, method: str) -> None:
-        """Learn a hidden AP's real SSID, tag how it was revealed."""
-        if not self._is_real_ssid(ap.ssid):
+    def decloak_from_probe_context(self, bssid: str, ssid: Optional[str]) -> bool:
+        ap = self.access_points.get(bssid.lower())
+        if ap is None or not self._is_real_ssid(ssid):
+            return False
+        return self._decloak(ap, ssid, "probe_req")
+
+    def confirm_decloak(self, bssid: str, ssid: str, method: str) -> bool:
+        ap = self.access_points.get(bssid.lower())
+        if ap is None or method not in _SSID_EVIDENCE_STRENGTH:
+            return False
+        return self._decloak(ap, ssid, method)
+
+    def _decloak(self, ap: AccessPoint, ssid: str, method: str) -> bool:
+        if not self._is_real_ssid(ssid):
+            return False
+        current_ssid = ap.ssid if self._is_real_ssid(ap.ssid) else None
+        evidence_key = ap.bssid.lower()
+        current_strength = self._ssid_evidence_strength.get(
+            evidence_key,
+            _SSID_EVIDENCE_STRENGTH.get(ap.decloak_method or "", 3 if current_ssid else 0),
+        )
+        new_strength = _SSID_EVIDENCE_STRENGTH[method]
+        if current_ssid is not None:
+            if new_strength < current_strength:
+                return False
+            if (new_strength == current_strength
+                    and method not in _AP_ORIGINATED_SSID_EVIDENCE
+                    and ssid != current_ssid):
+                return False
+
+        changed = current_ssid != ssid
+        if changed:
+            ap.ssid = ssid
             ap.decloak_method = method
-        ap.ssid = ssid
+            self._index_ssid(ssid)
+            if self._on_decloak is not None:
+                self._on_decloak(ap.bssid, ssid)
+        self._ssid_evidence_strength[evidence_key] = max(current_strength, new_strength)
+        if changed and not self._resolving_ssid_hints:
+            self._retry_pending_ssid_hints()
+        return changed
 
     @staticmethod
     def _is_real_ssid(ssid: Optional[str]) -> bool:
@@ -490,6 +616,9 @@ class WlanSink:
     # Back-compat alias the campaigns still call; funnels to the single own-MAC set.
     def register_forged_mac(self, mac) -> None:
         self.register_own_mac(mac)
+
+    def unregister_forged_mac(self, mac) -> None:
+        self.unregister_own_mac(mac)
 
     @property
     def forged_macs(self):

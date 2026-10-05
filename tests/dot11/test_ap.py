@@ -7,7 +7,9 @@ from wifit3.dot11.ap import auth_resp, assoc_resp, eapol_m1, beacon_clone
 from wifit3.dot11.eapol import (
     data_header, eapol_key, set_mic, LLC_SNAP_EAPOL, MIC_OFFSET, MIC_LEN, NONCE_LEN,
 )
-from wifit3.dot11.ie import ssid_ie, rates_ie, ds_param_ie
+from wifit3.dot11.ie import (
+    SUPPORTED_RATES_5GHZ, ds_param_ie, iter_information_elements, rates_ie, ssid_ie,
+)
 
 _BSSID = bytes.fromhex("112233445566")
 _CLIENT = bytes.fromhex("aabbccddeeff")
@@ -32,6 +34,13 @@ def test_assoc_resp_success_with_privacy_and_rates():
     assert f[26:28] == b"\x00\x00"                    # status success
     assert f[28:30] == b"\x01\x00"                    # AID 1
     assert rates_ie() in f
+
+
+def test_assoc_resp_5ghz_uses_ofdm_rates_without_extended_rates():
+    f = assoc_resp(_BSSID, _CLIENT, channel=36)
+    ies = {tag_id: body for tag_id, body, _raw in iter_information_elements(f, start=30)}
+    assert ies[1] == SUPPORTED_RATES_5GHZ
+    assert 50 not in ies
 
 
 def test_eapol_m1_layout_fromds_no_mic():

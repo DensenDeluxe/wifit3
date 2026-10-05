@@ -99,6 +99,8 @@ async def test_crash_in_run_is_contained_and_releases_radio(caplog):
     await c._task                        # does NOT raise: backstop swallows it
     assert c.tore_down                   # teardown still ran
     assert Campaign.active is None       # mutex released
+    assert isinstance(c.error, RuntimeError)
+    assert str(c.error) == "kaboom"
     assert "crashed in _loop()" in caplog.text
 
 
@@ -116,6 +118,8 @@ async def test_crash_in_teardown_still_releases_radio(caplog):
     c.run()
     await c._task
     assert Campaign.active is None       # released despite teardown crash
+    assert isinstance(c.error, RuntimeError)
+    assert str(c.error) == "teardown boom"
     assert "crashed in teardown()" in caplog.text
 
 

@@ -18,6 +18,14 @@ def is_group_mac(mac: str) -> bool:
         return True   # unparseable → never treat as a client
 
 
+@dataclass(frozen=True, slots=True)
+class SsidHint:
+    bssid: str
+    method: str
+    ssid: Optional[str] = None
+    short_ssid: Optional[int] = None
+
+
 @dataclass(slots=True, kw_only=True)
 class Packet:
     type: str                 # airodump-style label: "beacon", "eapol", "wep_data", "mgmt_5", …
@@ -84,6 +92,12 @@ class BeaconPacket(Packet):
     wsc_device_name: Optional[str] = None
     wsc_device_type: Optional[str] = None
     rsn_ie_raw: Optional[bytes] = None
+    ssid_hints: List[SsidHint] = field(default_factory=list)
+
+
+@dataclass(slots=True, kw_only=True)
+class FilsDiscoveryPacket(Packet):
+    short_ssid: Optional[int] = None
 
 
 @dataclass(slots=True, kw_only=True)

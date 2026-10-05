@@ -23,8 +23,16 @@ from wifit3.crack import handshake as wpa
 DECLOAK_METHOD_LABELS = {
     "beacon": "Beacon Leak",
     "probe_resp": "Probe Response",
+    "probe_req": "Probe Request",
     "assoc_req": "Association Request",
     "reassoc_req": "Reassociation Request",
+    "assoc_oracle": "Association Oracle",
+    "mbssid": "Multiple BSSID",
+    "owe_transition": "OWE Transition",
+    "rnr_same_ssid": "Reduced Neighbor Report",
+    "rnr_short_ssid": "RNR Short SSID",
+    "fils_discovery": "FILS Discovery",
+    "fils_short_ssid": "FILS Short SSID",
 }
 
 
@@ -71,7 +79,6 @@ class CaptureEvent:
     has_pmkid: Optional[bool] = None
     # handshake_complete-only
     pair_label: Optional[str] = None
-    # decloak-only: "beacon"/"probe_resp"/"assoc_req"/"reassoc_req" (future: "mbssid_ie")
     method: Optional[str] = None
     # recovered credential for WEP_KEY / WPS_* kinds (key hex / PSK / PIN); the
     # kind says which it is. None for the others.

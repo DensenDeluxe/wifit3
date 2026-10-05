@@ -23,6 +23,8 @@ from wifit3.wlan.wep_store import WepCaptureStore
 
 logger = logging.getLogger(__name__)
 
+_DECLOAK_BROADCAST_PROBE_TTL = 5.0
+
 # Prefer the most attack-capable card for TX (see fake_mac_rank below).
 _FAKE_MAC_RANK = {
     FakeMacSupport.SPOOFABLE: 0,
@@ -41,13 +43,18 @@ def fake_mac_rank(iface) -> int:
 class WlanArray:
     """A pool of WlanInterfaces feeding one shared WlanSink, plus card selection for attacks."""
 
-    def __init__(self, sink: Optional[WlanSink] = None, window: float = 0.3):
+    def __init__(self, sink: Optional[WlanSink] = None, window: float = 0.3,
+                 on_decloak: Optional[Callable[[str, str], None]] = None):
         self._members: List[WlanInterface] = []
         self._preferred: Optional[WlanInterface] = None   # user's session TX pick; see select_iface
-        self._sink = sink or WlanSink()
+        self._sink = sink or WlanSink(on_decloak=on_decloak)
         self._dedupe = StreamMerger(window=window)
         self._stray_beacon_channels: Dict[str, int] = {}  # bssid -> decoy channel; its beacons are ours
         self._evil_twin_bssids: Set[str] = set()          # our own twin APs; hidden from the scanner
+        self._decloak_probe_contexts: Dict[WlanInterface, tuple[str, int]] = {}
+        self._decloak_broadcast_probes: Dict[
+            tuple[WlanInterface, str], tuple[Set[str], float]
+        ] = {}
         self._disconnect_callbacks: List[Callable[[Exception, int], None]] = []
         self._name_counter = 0
         # Hop state: the channel partition is computed only in start_hopping; every membership change
@@ -125,6 +132,8 @@ class WlanArray:
             self._members.remove(iface)
         if iface is self._preferred:
             self._preferred = None      # pinned card unplugged: fall back to auto until re-picked
+        self._decloak_probe_contexts.pop(iface, None)
+        self._clear_decloak_broadcast_probes(iface)
         self._dedupe.remove_source(iface.name)
         remaining = len(self._members)
         logger.info("lost %s; %d card(s) remain", iface.name, remaining)
@@ -199,6 +208,8 @@ class WlanArray:
             self._sink.dispatch_rx(pkt)
         elif is_first_for_card:
             self._sink.record_signal(card_id, pkt.bssid, pkt.rssi)
+        if is_first_for_card:
+            self._apply_decloak_probe_context(iface, pkt)
 
     def ignore_stray_beacons(self, bssid: str, channel: int) -> None:
         """Drop this BSSID's beacons/probe-resps on ``channel``."""
@@ -210,6 +221,61 @@ class WlanArray:
     def _is_stray_beacon(self, pkt: Packet) -> bool:
         return (isinstance(pkt, BeaconPacket)
                 and self._stray_beacon_channels.get(pkt.bssid) == pkt.channel)
+
+    def register_decloak_probe_context(
+        self, bssid: str, listener_iface: WlanInterface, channel: int,
+    ) -> None:
+        self._clear_decloak_broadcast_probes(listener_iface)
+        self._decloak_probe_contexts[listener_iface] = (bssid.lower(), channel)
+
+    def unregister_decloak_probe_context(
+        self, bssid: str, listener_iface: WlanInterface,
+    ) -> None:
+        context = self._decloak_probe_contexts.get(listener_iface)
+        if context is not None and context[0] == bssid.lower():
+            self._decloak_probe_contexts.pop(listener_iface, None)
+            self._clear_decloak_broadcast_probes(listener_iface)
+
+    def _clear_decloak_broadcast_probes(self, iface: WlanInterface) -> None:
+        for key in [key for key in self._decloak_broadcast_probes if key[0] is iface]:
+            self._decloak_broadcast_probes.pop(key, None)
+
+    def _apply_decloak_probe_context(self, iface: WlanInterface, pkt: Packet) -> None:
+        context = self._decloak_probe_contexts.get(iface)
+        if context is None:
+            return
+        target_bssid, channel = context
+        if iface.current_channel != channel:
+            return
+        now = time.monotonic()
+        for key, (_ssids, seen_at) in list(self._decloak_broadcast_probes.items()):
+            if now - seen_at > _DECLOAK_BROADCAST_PROBE_TTL:
+                self._decloak_broadcast_probes.pop(key, None)
+        packet_bssid = (pkt.bssid or "").lower()
+        client_mac = (pkt.client_mac or "").lower()
+        if pkt.type == "probe_req":
+            if packet_bssid != "ff:ff:ff:ff:ff:ff":
+                if packet_bssid == target_bssid:
+                    self._sink.decloak_from_probe_context(target_bssid, pkt.ssid)
+                return
+            client = self._sink.clients.get(client_mac)
+            if client is not None and (client.bssid or "").lower() == target_bssid:
+                self._sink.decloak_from_probe_context(target_bssid, pkt.ssid)
+            elif client_mac and pkt.ssid:
+                key = (iface, client_mac)
+                previous = self._decloak_broadcast_probes.get(key)
+                ssids = set(previous[0]) if previous is not None else set()
+                ssids.add(pkt.ssid)
+                self._decloak_broadcast_probes[key] = (ssids, now)
+            return
+        if pkt.type not in ("mgmt_11", "assoc_req", "reassoc_req"):
+            return
+        if packet_bssid != target_bssid or (pkt.source or "").lower() != client_mac:
+            return
+        pending = self._decloak_broadcast_probes.pop((iface, client_mac), None)
+        if (pending is not None and len(pending[0]) == 1
+                and now - pending[1] <= _DECLOAK_BROADCAST_PROBE_TTL):
+            self._sink.decloak_from_probe_context(target_bssid, next(iter(pending[0])))
 
     # ----- sink facade -------------------------------------------------------
 
@@ -248,11 +314,17 @@ class WlanArray:
     def register_forged_mac(self, mac) -> None:
         self._sink.register_forged_mac(mac)
 
+    def unregister_forged_mac(self, mac) -> None:
+        self._sink.unregister_forged_mac(mac)
+
     def register_own_mac(self, mac) -> str:
         return self._sink.register_own_mac(mac)
 
     def unregister_own_mac(self, mac) -> None:
         self._sink.unregister_own_mac(mac)
+
+    def confirm_decloak(self, bssid: str, ssid: str, method: str) -> bool:
+        return self._sink.confirm_decloak(bssid, ssid, method)
 
     def record_injected_eapol(self, frame) -> None:
         self._sink.record_injected_eapol(frame)

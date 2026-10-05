@@ -17,6 +17,7 @@ from ..ap_table import APTable, APRow, COLUMN_KEYS
 from ..selectable_rich_log import SelectableRichLog
 
 from wifit3.campaigns import treelog
+from wifit3.campaigns.campaign import Campaign
 from wifit3.campaigns.pbc import PbcWatcher, WpsPbcCapture
 from wifit3.campaigns.wps.registrar import PinResult
 from wifit3.persist.config import Config
@@ -32,6 +33,7 @@ from wifit3.wlan.channels import band_ranges
 
 from .channel_filter import ChannelFilterDialog
 from .filter import FilterBar, ScanFilter
+from .focus_v2.decloak_modal import DecloakModal
 
 if TYPE_CHECKING:
     from wifit3.ui.app import WifiteApp
@@ -103,6 +105,7 @@ class ScannerView(Screen):
         Binding("f", "focus_filter", "Filter", show=True),
         Binding("/", "focus_filter", "Filter", show=False),
         Binding("l", "toggle_log", "Toggle Log", show=True),
+        Binding("d", "decloak", "Decloak", show=True),
         Binding("w", "wps_pbc_mode", "WPS PBC", show=True),
         Binding("v", "open_vault", "Vault", show=True),
         Binding("home", "scroll_home", "Top", show=False, priority=True),
@@ -126,8 +129,6 @@ class ScannerView(Screen):
         # cell highlight.
         self._prev_beacons: Dict[str, int] = {}
         self._beacon_flash_until: Dict[str, float] = {}
-        # Per-BSSID last-shown SSID, so a decloak is logged exactly once.
-        self._prev_ssids: Dict[str, Optional[str]] = {}
         # Per-BSSID (signature, row): an unchanged AP reuses its row object.
         self._row_cache: Dict[str, tuple] = {}
         # WPS PBC auto-invade. ON by default. The enabled flag lives on the app
@@ -215,7 +216,6 @@ class ScannerView(Screen):
 
             self.ap_cache[ap.bssid] = ap
             rows.append(self._row_for(ap, now, client_counts.get(ap.bssid, 0), sibling_ssid))
-            self._log_decloak(ap)
             self._drain_capture_events(ap, array.forged_macs)
 
         table = self.query_one("#ap-table", APTable)
@@ -296,17 +296,6 @@ class ScannerView(Screen):
             vault.revision, Config.is_silenced(ap.bssid),
         )
 
-    def _log_decloak(self, ap: AccessPoint) -> None:
-        if ap.bssid in self._prev_ssids and not self._prev_ssids[ap.bssid] and ap.ssid:
-            self._write_log(
-                Text.from_markup(
-                    f"[bold yellow][*] Decloaked Hidden Network: "
-                    f"{escape(ap.bssid)} -> {escape(ap.ssid)}[/bold yellow]",
-                    emoji=False,
-                )
-            )
-        self._prev_ssids[ap.bssid] = ap.ssid
-
     def _evict_expired_aps(self) -> None:
         if not self.app.array:
             return
@@ -334,7 +323,6 @@ class ScannerView(Screen):
         self.ap_cache.pop(bssid, None)
         self._prev_beacons.pop(bssid, None)
         self._beacon_flash_until.pop(bssid, None)
-        self._prev_ssids.pop(bssid, None)
         self._row_cache.pop(bssid, None)
 
     def _best_named_sibling_ssid(self, ap: AccessPoint) -> Optional[str]:
@@ -448,6 +436,38 @@ class ScannerView(Screen):
     def _selected_ap(self) -> Optional[AccessPoint]:
         bssid = self.query_one("#ap-table", APTable).cursor_bssid
         return self.ap_cache.get(bssid) if bssid else None
+
+    def action_decloak(self) -> None:
+        ap = self._selected_ap()
+        array = self.app.array
+        if ap is None:
+            self.notify("Select a hidden AP first", severity="warning")
+            return
+        if not ap.is_hidden:
+            self.notify("The selected AP already advertises its SSID", severity="warning")
+            return
+        if array is None:
+            self.notify("No active interface", severity="error")
+            return
+        if Campaign.active is not None:
+            self.notify("Another campaign is using the radio", severity="warning")
+            return
+        self.app.push_screen(
+            DecloakModal(ap, self._best_named_sibling_ssid(ap) or "", array.members),
+            lambda request: self._open_decloak_in_focus(ap, request),
+        )
+
+    async def _open_decloak_in_focus(self, ap: AccessPoint, request) -> None:
+        if request is None:
+            return
+        array = self.app.array
+        if array is None:
+            return
+        await array.stop_hopping()
+        self.app.target_ap = ap
+        focus = self.app.get_screen("focus")
+        focus.queue_decloak(request)
+        self.app.push_screen("focus")
 
     # ----- WPS PBC opportunistic capture -------------------------------------
 

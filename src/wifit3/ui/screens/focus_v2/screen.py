@@ -39,6 +39,9 @@ from wifit3.campaigns.pmkid import PmkidHarvestAttack
 from wifit3.campaigns.wep import WepCampaign
 from wifit3.campaigns.eviltwin import EvilTwinCampaign, EvilTwinInput
 from wifit3.ui.screens.focus_v2.eviltwin_modal import EvilTwinInputModal
+from wifit3.campaigns.csa_decloak import CsaDecloakCampaign, CsaDecloakInput
+from wifit3.campaigns.decloak import DecloakCampaign
+from wifit3.ui.screens.focus_v2.decloak_modal import DecloakModal
 from wifit3.campaigns.pin import (EMPTY_PIN_LABEL, WpsCampaign, load_run_state,
                                   run_progress_line)
 from wifit3.campaigns.deauth import DeauthCampaign
@@ -49,6 +52,7 @@ from wifit3.campaigns.wps.registrar import PinResult
 from wifit3.crack.handshake import handshake_uncrackable_label
 from wifit3.models import AccessPoint, IdSource
 from wifit3.persist.config import Config
+from wifit3.persist.decloak_memory import DecloakMemory
 from wifit3.ui.vault.global_tracker import GlobalJobTracker
 
 from ... import focus_model as fm
@@ -88,6 +92,7 @@ _PAD_RATE = 0.4
 _PBC_RETRY_COOLDOWN_S = 3.0
 
 _ATTACK_BUTTONS = [
+    ("btn-decloak", "Decloak"),
     ("btn-gen-ivs", "ARP Replay"), ("btn-chop", "ChopChop"), ("btn-deauth", "AutoDeauth"),
     ("btn-pmkid", "PMKID"), ("btn-wps-pin", "WPS PIN"), ("btn-eviltwin", "EvilTwin"),
     ("btn-stop-pbc", "Stop PBC"),
@@ -104,6 +109,8 @@ _BUTTON_TIPS = {
     "WPS PIN": "PIN attacks: PixieDust, default vendor PINs, then brute-force",
     "EvilTwin": "Punt clients onto a WPA2 twin to capture a crackable handshake",
     "Stop EvilTwin": "Tear down the twin and return clients to the AP",
+    "Decloak": "Reveal a hidden SSID with candidate probes or CSA client eviction",
+    "Stop Decloak": "Stop Decloak and restore the selected cards",
 }
 
 
@@ -135,7 +142,7 @@ class FocusViewV2(Screen):
     # Attack hotkeys come from the campaign registry
     BINDINGS = [
         Binding("escape", "go_back", "Back", show=True),
-        Binding("d", "deauth_all", "Deauth", show=True),
+        Binding("x", "deauth_all", "Deauth", show=True),
         *[Binding(cls.hotkey[0], f"campaign('{cls.key}')", cls.hotkey[1], show=True)
           for cls in fm.BUTTON_CAMPAIGNS if cls.hotkey],
         Binding("c", "campaign('chop')", "ChopChop", show=True),
@@ -209,6 +216,7 @@ class FocusViewV2(Screen):
     def __init__(self, **kwargs) -> None:
         super().__init__(**kwargs)
         self._target_ap = None
+        self._pending_decloak_request = None
         self._last_status: list[str] | None = None   # last-pushed headline; skip no-op repaints
         self._beacon_samples: deque = deque()
         self._events = CaptureEventDetector(granular_eapol=True)
@@ -218,12 +226,13 @@ class FocusViewV2(Screen):
         self._controls = CampaignControls()
         self._pbc_user_stopped = False
         self._pbc_retry_after = 0.0   # monotonic time before which we won't re-arm a PBC retry
+        self._decloak_confirm_tried: set[str] = set()
         self._probe_task: Optional[asyncio.Task] = None
         self._prev_stats = None
         self._campaign_toggles = {
             "wep": self._toggle_generate_ivs, "pmkid": self._toggle_pmkid,
             "wps": self._toggle_wps_pin, "chop": self._toggle_chop,
-            "deauth": self._toggle_deauth,
+            "deauth": self._toggle_deauth, "decloak": self._toggle_decloak,
         }
         self._binding_sig: Optional[tuple] = None
         self._rspacer_w = -1                          # last-set spacer width; skip no-op relayouts
@@ -260,6 +269,7 @@ class FocusViewV2(Screen):
         self._tick_timer = self.set_interval(1 / 10, self._tick)
         self._distribute()
         await self._enter_target()
+        self._consume_pending_decloak()
 
     async def on_screen_resume(self) -> None:
         # Full re-acquire only on a target change; a same-target return keeps the live view.
@@ -273,6 +283,16 @@ class FocusViewV2(Screen):
                 ok = await array.set_channel(target.channel, scan=False)
                 logger.info("[FOCUS] re-pin: bssid=%s ch=%s -> %s",
                             target.bssid, target.channel, ok)
+        self._consume_pending_decloak()
+
+    def queue_decloak(self, request) -> None:
+        self._pending_decloak_request = request
+
+    def _consume_pending_decloak(self) -> None:
+        if self._pending_decloak_request is None:
+            return
+        request, self._pending_decloak_request = self._pending_decloak_request, None
+        self.call_after_refresh(self._on_decloak_input, request)
 
     def on_resize(self) -> None:
         self._distribute()
@@ -437,6 +457,7 @@ class FocusViewV2(Screen):
         self._beacon_samples.clear()
         self._events.reset()
         self._eapol_agg.reset()
+        self._decloak_confirm_tried.clear()
         self._prev_stats = None        # drop the old target's counters
         self.query_one("#log", LogBand).clear()
 
@@ -555,6 +576,8 @@ class FocusViewV2(Screen):
             self._pbc_user_stopped = False
         if self._should_auto_invade_pbc(ap):
             self._start_pbc_capture(ap)
+        if self._should_auto_confirm_decloak(ap):
+            self._start_decloak_confirm(ap)
 
         status = self._status()
         if status != self._last_status:
@@ -707,6 +730,8 @@ class FocusViewV2(Screen):
             self._toggle_wps_pin()
         elif bid == "btn-eviltwin":
             self._toggle_eviltwin()
+        elif bid == "btn-decloak":
+            self._toggle_decloak()
         elif bid == "btn-gen-ivs":
             self._toggle_generate_ivs()
         elif bid == "btn-chop":
@@ -857,7 +882,6 @@ class FocusViewV2(Screen):
         self._sync_bindings()
 
     def action_deauth_all(self) -> None:
-        """'d': one-shot broadcast deauth, matching the client-panel button."""
         self.run_worker(self._run_deauth_broadcast(), exclusive=True)
 
     def action_wps_pbc_mode(self) -> None:
@@ -1060,6 +1084,115 @@ class FocusViewV2(Screen):
             self._log("[bold green]✓ EvilTwin captured a crackable handshake[/bold green]")
         else:
             self._log("[bold red]EvilTwin stopped[/bold red]")
+
+    def _toggle_decloak(self) -> None:
+        cur = self._controls.current
+        if cur is not None and cur.key == "decloak":
+            self._controls.request_stop()
+        else:
+            self._start_decloak()
+        self.refresh_buttons()
+
+    def _start_decloak(self) -> None:
+        ap = self._target_ap
+        array = self.app.array
+        if not ap or not array:
+            self._log("[red]✗ No target / interface. Cannot decloak.[/red]")
+            return
+        self.app.push_screen(DecloakModal(ap, self._decloak_base(ap), array.members),
+                             self._on_decloak_input)
+
+    def _decloak_base(self, ap) -> str:
+        array = self.app.array
+        if array is None:
+            return ""
+        for bssid in ap.siblings:
+            sib = array.access_points.get(bssid.lower())
+            if sib is not None and not sib.is_hidden and sib.ssid:
+                return sib.ssid
+        return ""
+
+    def _on_decloak_input(self, request: Optional[object]) -> None:
+        if not request:
+            return
+        ap, array = self._target_ap, self.app.array
+        if not ap or not array:
+            return
+        if isinstance(request, CsaDecloakInput):
+            if request.sender_iface is request.listener_iface:
+                mode = " [dim](1 card, time-sliced)[/dim]"
+            elif request.stand_up_ap:
+                mode = " [dim](decoy AP answering Auth/Assoc)[/dim]"
+            else:
+                mode = " [dim](passive listen)[/dim]"
+            start_message = (
+                f"[bold]CSA decloak[/bold] of [cyan]{escape(ap.bssid)}[/cyan]: herding "
+                f"clients to [bold]CH {request.dest_channel}[/bold]{mode}"
+            )
+            start_kwargs = {"csa": request}
+            campaign = CsaDecloakCampaign
+        else:
+            start_message = (
+                f"[bold]Decloak[/bold] of [cyan]{escape(ap.bssid)}[/cyan]: "
+                f"probing [bold]{len(request)}[/bold] candidate SSID(s)"
+            )
+            start_kwargs = {"candidates": request}
+            campaign = DecloakCampaign
+        try:
+            started = self._controls.start(campaign, array, ap, log=self._log, **start_kwargs)
+        except Exception as exc:
+            logger.exception("Decloak start failed")
+            self._log(f"[bold red]✗ Decloak failed to start:[/bold red] {escape(str(exc))}")
+            return
+        if started is None:
+            self._log(treelog.leaf_fail("Decloak could not start: radio is busy"))
+            return
+        self._log(start_message)
+        self.refresh_buttons()
+
+    def _should_auto_confirm_decloak(self, ap) -> bool:
+        if not ap.is_hidden or Config.is_silenced(ap.bssid):
+            return False
+        if ap.bssid in self._decloak_confirm_tried or DecloakMemory.get(ap.bssid) is None:
+            return False
+        return self._controls.current is None and Campaign.active is None
+
+    def _start_decloak_confirm(self, ap) -> None:
+        stored = DecloakMemory.get(ap.bssid)
+        array = self.app.array
+        if not stored or not array:
+            return
+        try:
+            started = self._controls.start(
+                DecloakCampaign, array, ap, log=self._log, candidates=[stored],
+            )
+        except Exception as exc:
+            logger.exception("Decloak confirm start failed")
+            self._log(treelog.leaf_fail(f"remembered SSID check failed: {escape(str(exc))}"))
+            return
+        if started is None:
+            return
+        self._decloak_confirm_tried.add(ap.bssid)
+        self._log(f'[bold]Decloaking[/bold] [cyan]{escape(ap.bssid)}[/cyan] '
+                  f'("[italic]{escape(stored)}[/italic]")…')
+        self.refresh_buttons()
+
+    def _finish_decloak(self, camp) -> None:
+        if getattr(camp, "error", None) is not None:
+            self._log(treelog.leaf_fail(
+                f"Decloak failed: {escape(str(camp.error))}"
+            ))
+        elif camp.revealed or not getattr(camp.ap, "is_hidden", True):
+            return
+        elif getattr(camp, "stopped", False):
+            self._log(treelog.leaf("[yellow]Decloak stopped[/yellow]"))
+        elif camp.iface is None:
+            self._log(treelog.leaf_fail(f"no card could reach CH {camp.ap.channel}"))
+        elif getattr(camp, "csa", None) is not None:
+            self._log(treelog.leaf_fail("no client returned on the destination channel"))
+        else:
+            self._log(treelog.leaf_fail(
+                f"no candidate matched [dim]({camp.tried} tried)[/dim]"))
 
     # ----- WEP: Generate IVs (Replay) + Chop ---------------------------------
 

@@ -115,6 +115,8 @@ class Association:
         self.fail_reason: Optional[str] = None
         self._auth_ok = False
         self._assoc_ok = False
+        self.auth_status: Optional[int] = None
+        self.assoc_status: Optional[int] = None
         self._active = False
 
     # ---- lifecycle ----------------------------------------------------------
@@ -139,15 +141,19 @@ class Association:
                 return False
             self._auth_ok = False
             self._assoc_ok = False
+            self.auth_status = None
+            self.assoc_status = None
             logger.info("-> Auth Req to %s", self.bssid)
             await self._send_until(auth_req(self.bssid_bytes, self.our_mac),
-                                   lambda: self._auth_ok, self.auth_timeout)
+                                   lambda: self.auth_status is not None, self.auth_timeout)
+            if self.auth_status not in (None, 0):
+                continue
             # Send Assoc whether or not the Auth Resp surfaced
             logger.info("-> Assoc Req to %s", self.bssid)
             await self._send_until(assoc_req(self.bssid_bytes, self.our_mac, self.ssid,
                                              self.assoc_trailer_ies,
                                              channel=self.channel, privacy=self.privacy),
-                                   lambda: self._assoc_ok, self.assoc_timeout)
+                                   lambda: self.assoc_status is not None, self.assoc_timeout)
             if self._assoc_ok:
                 self.associated = True
                 return True
@@ -169,9 +175,12 @@ class Association:
             await asyncio.sleep(0.02)
 
     def _rx_cb(self, pkt) -> None:
-        if not self._active or pkt.raw[4:10] != self.our_mac:   # addressed to us
+        if (not self._active or len(pkt.raw) < 24
+                or pkt.raw[4:10] != self.our_mac
+                or pkt.raw[10:16] != self.bssid_bytes):
             return
         if isinstance(pkt, AssocRespPacket):
+            self.assoc_status = pkt.status
             desc = status_description(pkt.status)
             if pkt.status == 0:
                 self._assoc_ok = True
@@ -180,6 +189,7 @@ class Association:
                 self.fail_reason = f"Assoc rejected (status {pkt.status}: {desc})"
                 logger.info("<- Assoc Resp rejected (status %s: %s) from %s", pkt.status, desc, self.bssid)
         elif isinstance(pkt, AuthPacket):
+            self.auth_status = pkt.status
             desc = status_description(pkt.status)
             if pkt.status == 0:
                 self._auth_ok = True
