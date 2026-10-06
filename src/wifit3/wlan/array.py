@@ -12,7 +12,7 @@ from contextlib import asynccontextmanager
 from typing import AsyncIterator, Callable, Dict, List, Optional, Set
 
 from wifit3.chips.driver import FakeMacSupport
-from wifit3.dot11.packet import BeaconPacket, Packet
+from wifit3.dot11.packet import BeaconPacket, EapolPacket, Packet
 from wifit3.models import AccessPoint, Client
 from wifit3.wlan.dedupe import StreamMerger
 from wifit3.wlan.interface import WlanInterface
@@ -191,14 +191,25 @@ class WlanArray:
             return
         if self._is_stray_beacon(pkt):
             return
-        novel_globally, is_first_for_card = self._dedupe.submit_detailed(
-            card_id, pkt.raw, time.monotonic()
+        should_emit, is_first_for_card = self._dedupe.submit_detailed(
+            card_id, pkt.raw, time.monotonic(), self._capture_quality(pkt)
         )
-        if novel_globally:
+        if should_emit:
             self._sink.update(pkt, card_id, channel_hint=iface.current_channel)
             self._sink.dispatch_rx(pkt)
         elif is_first_for_card:
             self._sink.record_signal(card_id, pkt.bssid, pkt.rssi)
+
+    @staticmethod
+    def _capture_quality(pkt: Packet) -> tuple[int, ...]:
+        if not isinstance(pkt, EapolPacket):
+            return (0,)
+        return (
+            int(bool(pkt.payload)),
+            int(pkt.pmkid is not None or pkt.akm is not None),
+            int(pkt.replay_counter is not None),
+            len(pkt.raw),
+        )
 
     def ignore_stray_beacons(self, bssid: str, channel: int) -> None:
         """Drop this BSSID's beacons/probe-resps on ``channel``."""
