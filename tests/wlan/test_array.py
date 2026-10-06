@@ -450,3 +450,64 @@ async def test_claim_when_not_hopping_is_inert():
     async with a.claim(m1) as claimed:
         assert claimed is m1
     assert m1.hop_calls == []
+
+
+async def test_claims_for_the_same_card_are_serialized():
+    card = FakeIface("wlan0", [1, 6, 11])
+    array = _pool(card)
+    first_entered = asyncio.Event()
+    release_first = asyncio.Event()
+    entered = []
+
+    async def hold(name, wait=False):
+        async with array.claim(card):
+            entered.append(name)
+            if wait:
+                first_entered.set()
+                await release_first.wait()
+
+    first = asyncio.create_task(hold("first", wait=True))
+    await first_entered.wait()
+    second = asyncio.create_task(hold("second"))
+    await asyncio.sleep(0)
+    assert entered == ["first"]
+    release_first.set()
+    await asyncio.gather(first, second)
+    assert entered == ["first", "second"]
+
+
+async def test_claimed_card_is_excluded_from_selection_and_stack_tuning():
+    first = FakeIface("wlan0", [1, 6, 11])
+    second = FakeIface("wlan1", [1, 6, 11])
+    array = _pool(first, second)
+
+    async with array.claim(first):
+        assert array.select_iface(6) is second
+        await array.set_channel(6)
+        assert first.tuned == []
+        assert second.tuned == [6]
+
+
+async def test_hotplug_repartition_does_not_restart_a_claimed_card():
+    first = FakeIface("wlan0", [1, 6, 11])
+    second = FakeIface("wlan1", [1, 6, 11])
+    array = _pool(first, second)
+    await array.start_hopping([1, 6, 11])
+
+    async with array.claim(first):
+        claimed_hops = len(first.hop_calls)
+        joined = FakeIface("wlan2", [1, 6, 11])
+        array.attach(joined)
+        await asyncio.sleep(0.05)
+        assert len(first.hop_calls) == claimed_hops
+        assert joined.hop_calls
+
+
+async def test_array_lease_claims_its_card_until_cleanup_finishes():
+    first = FakeIface("wlan0", [1, 6, 11])
+    second = FakeIface("wlan1", [1, 6, 11])
+    array = _pool(first, second)
+
+    async with array.lease(channel=6, iface=first):
+        assert array.select_iface(6) is second
+    assert array.select_iface(6) is first
