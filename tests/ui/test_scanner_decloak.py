@@ -1,4 +1,4 @@
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from textual.app import App
@@ -119,3 +119,47 @@ async def test_failure_still_restores_hopping():
 
         assert array.stop_calls == 1
         assert array.start_calls == starts_before + 1
+
+
+async def test_pbc_window_is_not_consumed_while_decloak_runs():
+    pbc = AccessPoint(
+        bssid="aa:bb:cc:dd:ee:ff", ssid="PBC", channel=6, wps=True,
+        wps_selected_registrar=True, wps_device_password_id=0x0004,
+    )
+    app = _ScannerHost(_ScannerArray(pbc))
+    app.pbc_enabled = True
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause(0)
+        scanner = app.screen
+        scanner._invade_pbc = AsyncMock()
+        scanner._decloak_task = MagicMock()
+
+        scanner._poll_pbc()
+        scanner._decloak_task = None
+        scanner._poll_pbc()
+        await pilot.pause(0)
+
+        scanner._invade_pbc.assert_awaited_once_with(pbc)
+
+
+async def test_direct_pbc_deferral_rearms_the_open_window():
+    pbc = AccessPoint(
+        bssid="aa:bb:cc:dd:ee:ff", ssid="PBC", channel=6, wps=True,
+        wps_selected_registrar=True, wps_device_password_id=0x0004,
+    )
+    app = _ScannerHost(_ScannerArray(pbc))
+    app.pbc_enabled = True
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause(0)
+        scanner = app.screen
+        scanner._write_log = MagicMock()
+        scanner._invade_pbc = AsyncMock()
+        assert scanner._pbc_watcher.new_windows([pbc]) == [pbc]
+        scanner._decloak_task = MagicMock()
+
+        scanner._on_pbc_window(pbc)
+        scanner._decloak_task = None
+        scanner._poll_pbc()
+        await pilot.pause(0)
+
+        scanner._invade_pbc.assert_awaited_once_with(pbc)

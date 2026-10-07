@@ -578,7 +578,11 @@ class ScannerView(Screen):
         array = self.app.array
         if not array or self.app.screen is not self:
             return
-        for ap in self._pbc_watcher.new_windows(array.get_access_points()):
+        aps = array.get_access_points()
+        if self._decloak_task is not None:
+            self._pbc_watcher.defer_new_windows(aps)
+            return
+        for ap in self._pbc_watcher.new_windows(aps):
             self._on_pbc_window(ap)
 
     def _on_pbc_window(self, ap: AccessPoint) -> None:
@@ -598,6 +602,7 @@ class ScannerView(Screen):
             self._write_log(treelog.leaf(f"[italic]already captured[/italic]{where}"))
             return
         if self._decloak_task is not None:
+            self._pbc_watcher.rearm(ap.bssid)
             self._write_log(treelog.leaf(
                 "[yellow]decloak in progress: deferring this PBC window[/yellow]"
             ))
