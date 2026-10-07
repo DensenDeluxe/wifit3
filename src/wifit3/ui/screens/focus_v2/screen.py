@@ -985,7 +985,12 @@ class FocusViewV2(Screen):
         if not ap.is_hidden:
             self._log(treelog.leaf("SSID was revealed while the candidate list was open"))
             return
-        self._log(treelog.header(f"Decloaking {escape(ap.bssid)}"))
+        remembered = Config.decloaked_ssid(ap.bssid)
+        if remembered and candidates[0] == remembered:
+            title = f'Decloaking {escape(ap.bssid)} ("{escape(remembered)}")...'
+        else:
+            title = f"Decloaking {escape(ap.bssid)}"
+        self._log(treelog.header(title))
         self._log(treelog.branch(f"{len(candidates)} candidate SSIDs"))
         started = self._controls.start(DecloakCampaign, array, ap, candidates=candidates,
                                        log=lambda m: self._log(treelog.branch(m)))

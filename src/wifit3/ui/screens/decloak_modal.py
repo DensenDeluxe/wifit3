@@ -17,6 +17,7 @@ from wifit3.campaigns.decloak import (
     SSID_MAX_OCTETS, candidates_from_sibling, named_sibling_ssid,
 )
 from wifit3.models import AccessPoint
+from wifit3.persist.config import Config
 from wifit3.ui.path_picker import PathPickerModal
 from wifit3.wlan.array import WlanArray
 
@@ -45,9 +46,14 @@ def wordlist_ssids(contents: str) -> list[str]:
 
 
 def decloak_candidate_defaults(array: WlanArray, ap: AccessPoint) -> tuple[str, list[str]]:
-    """The template base and the sibling-derived initial candidates for an AP."""
+    """The template base and ordered initial candidates for an AP."""
     base = named_sibling_ssid(array, ap)
-    return base, candidates_from_sibling(base)
+    remembered = Config.decloaked_ssid(ap.bssid)
+    candidates: list[str] = []
+    for candidate in ([remembered] if remembered else []) + candidates_from_sibling(base):
+        if candidate not in candidates:
+            candidates.append(candidate)
+    return base, candidates
 
 
 class DecloakCandidateModal(ModalScreen[Optional[list[str]]]):
