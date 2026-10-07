@@ -181,6 +181,8 @@ class PathPickerModal(ModalScreen[Optional[Path]]):
 
     def _sync_root(self) -> None:
         """Point the box and the root node at the tree's root, and disable ".." once at the top."""
+        if not self.is_active:
+            return
         root = Path(self.query_one("#picker-tree", DirectoryTree).path)
         self.query_one("#picker-path", Input).value = str(root)
         self.query_one("#picker-parent", Button).disabled = root.parent == root
