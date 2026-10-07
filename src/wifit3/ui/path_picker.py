@@ -169,7 +169,7 @@ class PathPickerModal(ModalScreen[Optional[Path]]):
         self._accept(Path(event.value).expanduser())
 
     def on_mount(self) -> None:
-        self._sync_root()
+        self.call_after_refresh(self._sync_root)
 
     @on(Button.Pressed, ".picker-root")
     def _jump_to_root(self, event: Button.Pressed) -> None:
