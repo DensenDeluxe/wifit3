@@ -193,9 +193,11 @@ class WlanFrameParser:
     def _decode_ssid(value: bytes) -> Optional[str]:
         if not value or len(value) > 32:
             return None
-        if any(byte < 0x20 and byte not in (0x09, 0x0a, 0x0d) for byte in value):
-            return None
         decoded = value.decode("utf-8", errors="ignore")
+        # Validate decoded codepoints, not raw bytes: isprintable() also rejects C1
+        # controls, DEL, bidi overrides and TAB/LF/CR that a byte test lets through.
+        if not all(ch.isprintable() for ch in decoded):
+            return None
         return decoded or None
 
     @staticmethod

@@ -38,7 +38,7 @@ from wifit3.campaigns.campaign import Campaign
 from wifit3.campaigns.pmkid import PmkidHarvestAttack
 from wifit3.campaigns.wep import WepCampaign
 from wifit3.campaigns.eviltwin import EvilTwinCampaign, EvilTwinInput
-from wifit3.ui.screens.focus_v2.eviltwin_modal import EvilTwinInputModal
+from wifit3.ui.screens.focus_v2.eviltwin_modal import EvilTwinInputModal, _can_host
 from wifit3.campaigns.csa_decloak import CsaDecloakCampaign, CsaDecloakInput
 from wifit3.campaigns.decloak import DecloakCampaign
 from wifit3.ui.screens.focus_v2.decloak_modal import DecloakModal
@@ -542,8 +542,8 @@ class FocusViewV2(Screen):
                 creds = []
                 if cap.value:
                     creds.append(f"[black bold on cyan] {escape(cap.value)} [/black bold on cyan]")
-                if cap.pin:
-                    creds.append(f"[dim]PIN[/dim] {escape(cap.pin)}")
+                if cap.pin is not None:
+                    creds.append(f"[dim]PIN[/dim] {escape(cap.pin or EMPTY_PIN_LABEL)}")
                 joined = ("  ".join(creds) + "  ") if creds else ""
                 self._log(line(f"{head}  {joined}[dim]{dt:%Y-%m-%d %H:%M}[/dim]"))
             else:
@@ -1053,6 +1053,13 @@ class FocusViewV2(Screen):
         if not ap or not array or not array.members:
             self._log("[red]✗ No target / interface. Cannot start EvilTwin.[/red]")
             return
+        # Every member here is FAKE_MAC=NONE/UNIMPLEMENTED, so the modal's host Select
+        # would be built empty and raise EmptySelectError at compose. Guarding on members
+        # alone left the button live but the campaign unstartable -- a crash, not a no-op.
+        if not any(_can_host(m) for m in array.members):
+            self._log("[red]✗ No interface can spoof a MAC, so none can host the twin."
+                      " EvilTwin needs a SPOOFABLE or FIXED_MAC card.[/red]")
+            return
         self.app.push_screen(EvilTwinInputModal(ap, array.members), self._on_eviltwin_input)
 
     def _on_eviltwin_input(self, evil_input: Optional[EvilTwinInput]) -> None:
@@ -1277,17 +1284,18 @@ class FocusViewV2(Screen):
         """Reap a finished WPS PIN sweep: log/save the found PIN, else the give-up reason."""
         ssid = escape(camp.target.ssid or camp.bssid)
         if camp.state.found_pin is not None:
-            camp.target.wps_pin = camp.state.found_pin or EMPTY_PIN_LABEL
+            camp.target.wps_pin = camp.state.found_pin
             camp.target.wps_pin_psk = camp.state.found_psk
+            displayed_pin = camp.state.found_pin or EMPTY_PIN_LABEL
             self._log(treelog.branch_ok(
                 f"[black bold on cyan]  WPS PIN for {ssid}: "
-                f"{escape(camp.target.wps_pin)}  [/black bold on cyan]"))
+                f"{escape(displayed_pin)}  [/black bold on cyan]"))
             self._log(treelog.branch(
                 f"[black bold on green] Password for {ssid}: "
                 f"\"{escape(camp.state.found_psk or '')}\" [/black bold on green]"))
             try:
                 result = self.app.vault.save_wps_pin(
-                    camp.target, camp.target.wps_pin, camp.state.found_psk or "")
+                    camp.target, camp.state.found_pin, camp.state.found_psk or "")
                 if result is None:
                     self._log(treelog.leaf("[dim](save failed)[/dim]"))
                 else:
