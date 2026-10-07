@@ -42,10 +42,18 @@ def test_candidates_dedup_and_keep_suffix_order():
     assert len(out) <= len(SIBLING_SUFFIXES)
 
 
-def test_candidates_strip_trailing_whitespace():
-    out = candidates_from_sibling("TestSSID 2.4")
-    assert "TestSSID 2.4 Guest" in out
-    assert "TestSSID 2.4-Guest" in out
+def test_candidates_preserve_sibling_whitespace():
+    out = candidates_from_sibling(" TestSSID ")
+    assert out[0] == " TestSSID "
+    assert " TestSSID  Guest" in out
+    assert " TestSSID -Guest" in out
+
+
+def test_candidates_apply_octet_limit_without_trimming():
+    valid = " " + "X" * 30 + " "
+    invalid = " " + "X" * 31 + " "
+    assert candidates_from_sibling(valid)[0] == valid
+    assert candidates_from_sibling(invalid) == []
 
 
 def test_candidates_drop_names_over_32_octets():

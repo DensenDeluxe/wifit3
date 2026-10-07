@@ -48,7 +48,7 @@ def candidates_from_sibling(sibling_ssid: str) -> list[str]:
         return []
     candidates: list[str] = []
     for suffix in SIBLING_SUFFIXES:
-        candidate = (sibling_ssid + suffix).rstrip()
+        candidate = sibling_ssid + suffix
         if (candidate and candidate not in candidates
                 and len(candidate.encode("utf-8")) <= SSID_MAX_OCTETS):
             candidates.append(candidate)

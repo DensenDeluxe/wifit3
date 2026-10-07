@@ -26,20 +26,22 @@ SSID_TOKEN = "$ssid"
 def expand_candidates(text: str, base: str) -> list[str]:
     """Expand templates into the deduplicated, valid SSIDs the sweep will send."""
     candidates: list[str] = []
+    seen: set[str] = set()
     for line in text.splitlines():
         if SSID_TOKEN in line and not base:
             raise ValueError("$ssid requires a base SSID")
-        candidate = line.replace(SSID_TOKEN, base).strip()
-        if (candidate and candidate not in candidates
+        candidate = line.replace(SSID_TOKEN, base)
+        if (candidate and candidate not in seen
                 and len(candidate.encode("utf-8")) <= SSID_MAX_OCTETS):
+            seen.add(candidate)
             candidates.append(candidate)
     return candidates
 
 
 def wordlist_ssids(contents: str) -> list[str]:
     """SSIDs from a loaded wordlist, excluding blank and comment lines."""
-    return [line.strip() for line in contents.splitlines()
-            if line.strip() and not line.lstrip().startswith("#")]
+    return [line for line in contents.splitlines()
+            if line and not line.lstrip().startswith("#")]
 
 
 def decloak_candidate_defaults(array: WlanArray, ap: AccessPoint) -> tuple[str, list[str]]:
@@ -119,7 +121,7 @@ class DecloakCandidateModal(ModalScreen[Optional[list[str]]]):
         area = self.query_one("#candidates", TextArea)
         try:
             candidates = expand_candidates(
-                area.text, self.query_one("#base", Input).value.strip()
+                area.text, self.query_one("#base", Input).value
             )
         except ValueError as exc:
             self._set_warn(f"[red]{escape(str(exc))}[/red]")
