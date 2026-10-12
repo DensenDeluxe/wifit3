@@ -100,7 +100,6 @@ def test_crack_success_uses_real_essid_from_hashline(manager, tmp_path):
 def test_reconcile_resolves_completed_upload_from_tracking(manager):
     """A synchronous upload left RUNNING (no log file) resolves to SUCCESS via its tracking, not
     a false ERROR, when the app restarts in the window before the confirming poll."""
-    from wifit3.models.access_point import CaptureType
     from wifit3.models.jobs import JobState
 
     class UploadTool:
