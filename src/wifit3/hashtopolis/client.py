@@ -104,6 +104,9 @@ def normalize_url(raw: str) -> str:
             ipaddress.ip_address(host)
         except ValueError:
             raise HashtopolisConfigError("Invalid Hashtopolis URL host") from None
+        after_bracket = parts.netloc.rsplit("@", 1)[-1].split("]", 1)[1]
+        if after_bracket and not (after_bracket.startswith(":") and after_bracket[1:].isdigit()):
+            raise HashtopolisConfigError("Invalid Hashtopolis URL host")
     if parts.netloc.rsplit("@", 1)[-1].endswith(":"):
         raise HashtopolisConfigError("Invalid Hashtopolis URL")
     if port is not None and not 1 <= port <= 65535:
