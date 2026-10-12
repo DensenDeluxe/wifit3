@@ -8,6 +8,7 @@ from unittest.mock import MagicMock
 from wifit3.campaigns.decloak import (
     SIBLING_SUFFIXES,
     DecloakCampaign,
+    DecloakInput,
     candidates_from_sibling,
     named_sibling_ssid,
 )
@@ -23,7 +24,7 @@ def _campaign(candidates, *, target=None):
     array = MagicMock()
     array.access_points = {}
     return DecloakCampaign(array, target or AccessPoint(bssid=_BSSID, channel=6),
-                           candidates=candidates)
+                           DecloakInput(candidates, use_authassoc_probe=True))
 
 
 # ----- candidate generation ----------------------------------------------------
@@ -138,7 +139,7 @@ class _FakeAssociation:
 async def test_sweep_authenticates_once_for_every_candidate():
     campaign = _campaign(["A", "B", "C"])
     association = _FakeAssociation({"C": 0})
-    found = await campaign._claim_each(association, ["A", "B", "C"])
+    found = await campaign._claim_each(association)
 
     assert found == "C"
     assert association.calls == ["assoc:A", "assoc:B", "assoc:C"]   # no re-auth
@@ -148,7 +149,7 @@ async def test_sweep_authenticates_once_for_every_candidate():
 async def test_sweep_reauthenticates_only_after_a_deauth():
     campaign = _campaign(["A", "B"])
     association = _FakeAssociation({}, deauth_after="A")
-    found = await campaign._claim_each(association, ["A", "B"])
+    found = await campaign._claim_each(association)
 
     assert found is None
     assert association.calls == ["assoc:A", "auth", "assoc:B"]
@@ -158,5 +159,5 @@ async def test_sweep_stops_when_asked():
     campaign = _campaign(["A", "B"])
     campaign.stopped = True
     association = _FakeAssociation({"B": 0})
-    assert await campaign._claim_each(association, ["A", "B"]) is None
+    assert await campaign._claim_each(association) is None
     assert association.calls == []

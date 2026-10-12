@@ -42,10 +42,11 @@ from wifit3.ui.screens.focus_v2.eviltwin_modal import EvilTwinInputModal, _can_h
 from wifit3.campaigns.pin import (EMPTY_PIN_LABEL, WpsCampaign, load_run_state,
                                   run_progress_line)
 from wifit3.campaigns.deauth import DeauthCampaign
-from wifit3.campaigns.decloak import DecloakCampaign
+from wifit3.campaigns.decloak import DecloakCampaign, DecloakInput, named_sibling_ssid
 from wifit3.campaigns.pbc import WpsPbcCapture
 from wifit3.campaigns.probe import probe_ap
 from .campaign_controls import CampaignControls
+from .decloak_modal import DecloakInputModal
 from wifit3.campaigns.wps.registrar import PinResult
 from wifit3.crack.handshake import handshake_uncrackable_label
 from wifit3.models import AccessPoint, IdSource
@@ -225,7 +226,7 @@ class FocusViewV2(Screen):
         self._campaign_toggles = {
             "wep": self._toggle_generate_ivs, "pmkid": self._toggle_pmkid,
             "wps": self._toggle_wps_pin, "chop": self._toggle_chop,
-            "deauth": self._toggle_deauth,
+            "deauth": self._toggle_deauth, "decloak": self._toggle_decloak,
         }
         self._binding_sig: Optional[tuple] = None
         self._rspacer_w = -1                          # last-set spacer width; skip no-op relayouts
@@ -678,6 +679,8 @@ class FocusViewV2(Screen):
             if result is not None:
                 self._log(treelog.leaf(_save_line(result)))
         elif ev.kind == CaptureKind.DECLOAK:
+            if Config.remember_decloak(ev.bssid, ev.ssid or ""):
+                self.app.persist_config()
             method_label = DECLOAK_METHOD_LABELS.get(ev.method or "", ev.method or "?")
             self._log(
                 f"[bold]Decloaked[/bold] [cyan]{escape(ev.bssid)}[/cyan] → "
@@ -969,9 +972,29 @@ class FocusViewV2(Screen):
         if not ap or not array:
             self._log("[red]✗ No target / interface. Aborting decloak.[/red]")
             return
+        self.app.push_screen(DecloakInputModal(ap.bssid, named_sibling_ssid(array, ap)),
+                             self._on_decloak_input)
+
+    def _on_decloak_input(self, chosen: Optional[DecloakInput]) -> None:
+        """The modal's result. Re-checks the target, since it may have been revealed or the
+        radio taken while the dialog was open."""
+        if chosen is None:
+            return
+        ap = self._target_ap
+        array = self.app.array
+        if not ap or not array:
+            self._log("[red]✗ No target / interface. Aborting decloak.[/red]")
+            return
+        if not ap.is_hidden:
+            self._log(treelog.branch("SSID was revealed while the dialog was open"))
+            self.refresh_buttons()
+            return
         self._log(treelog.header(f"Decloaking {escape(ap.bssid)}"))
-        self._controls.start(DecloakCampaign, array, ap,
-                             log=lambda m: self._log(treelog.branch(m)))
+        started = self._controls.start(DecloakCampaign, array, ap, decloak_input=chosen,
+                                       log=lambda m: self._log(treelog.branch(m)))
+        if started is None:
+            self._log(treelog.branch("another campaign owns the radio"))
+        self.refresh_buttons()
 
     def _toggle_pmkid(self) -> None:
         cur = self._controls.current
@@ -994,6 +1017,8 @@ class FocusViewV2(Screen):
     def _finish_decloak(self, camp) -> None:
         if camp.revealed:
             self._log(treelog.leaf_ok(f"revealed [bold]{escape(camp.revealed)}[/bold]"))
+            if Config.remember_decloak(camp.ap.bssid, camp.revealed):
+                self.app.persist_config()
         else:
             self._log(treelog.leaf_fail(f"no match in {camp.sent} guesses"))
 

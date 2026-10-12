@@ -298,14 +298,6 @@ class ScannerView(Screen):
         )
 
     def _log_decloak(self, ap: AccessPoint) -> None:
-        if ap.bssid in self._prev_ssids and not self._prev_ssids[ap.bssid] and ap.ssid:
-            self._write_log(
-                Text.from_markup(
-                    f"[bold yellow][*] Decloaked Hidden Network: "
-                    f"{escape(ap.bssid)} -> {escape(ap.ssid)}[/bold yellow]",
-                    emoji=False,
-                )
-            )
         self._prev_ssids[ap.bssid] = ap.ssid
 
     def _evict_expired_aps(self) -> None:
@@ -378,6 +370,8 @@ class ScannerView(Screen):
             save_result = self.app.vault.save_pmkid(ap, ev.client_mac)
         elif ev.kind == CaptureKind.DECLOAK:
             # A ● header (not a ✓ win): a hidden SSID became visible, not a credential.
+            if Config.remember_decloak(ev.bssid, ev.ssid or ""):
+                self.app.persist_config()
             method_label = DECLOAK_METHOD_LABELS.get(ev.method or "", ev.method or "?")
             self._write_log(Text.from_markup(treelog.header(
                 f"[bold]Decloaked[/bold] [cyan]{escape(ev.bssid)}[/cyan] → "
