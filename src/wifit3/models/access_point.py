@@ -7,8 +7,11 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Dict, List, Optional, Set
 
+from wifit3.dot11.pmf import PmfPosture, classify_pmf
+
 from .handshake import Handshake
 from .identity import ApIdentity, IdKey, IdSource
+from .security import Severity, SecurityWarning
 
 
 @dataclass
@@ -137,3 +140,33 @@ class AccessPoint:
     def is_hidden(self) -> bool:
         """No usable SSID: never seen, or still the "<hidden>" placeholder."""
         return not (self.ssid and self.ssid != "<hidden>")
+
+    @property
+    def pmf_posture(self) -> PmfPosture:
+        """802.11w posture derived from the advertised MFPC/MFPR bits."""
+        return classify_pmf(self.pmf_capable, self.pmf_required)
+
+    @property
+    def security_warnings(self) -> List[SecurityWarning]:
+        """PMF advisories for this AP; empty for non-RSN (open / WEP / WPA1) networks."""
+        if not self.akm_suites:
+            return []
+        posture = self.pmf_posture
+        out: List[SecurityWarning] = []
+        if posture is PmfPosture.INVALID:
+            out.append(SecurityWarning(
+                "pmf-invalid", Severity.CRITICAL,
+                "RSN sets MFPR without MFPC (malformed PMF configuration)"))
+        elif posture is PmfPosture.DISABLED:
+            out.append(SecurityWarning(
+                "pmf-disabled", Severity.WARNING,
+                "PMF disabled: management frames unprotected (deauth/disassoc succeed)"))
+        elif posture is PmfPosture.OPTIONAL:
+            out.append(SecurityWarning(
+                "pmf-optional", Severity.WARNING,
+                "PMF optional: non-PMF clients remain deauth/disassoc-vulnerable"))
+        if self.wpa3 and posture is not PmfPosture.REQUIRED:
+            out.append(SecurityWarning(
+                "wpa3-without-pmf", Severity.CRITICAL,
+                "WPA3 advertised without required PMF (non-compliant, downgrade-exposed)"))
+        return out
