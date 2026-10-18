@@ -46,6 +46,7 @@ def _rsn_ie(
     pairwise_ciphers=(0x04,),       # CCMP
     akms=(0x02,),                   # PSK
     rsn_caps: int = 0,
+    group_mgmt_cipher=None,          # GMCS (e.g. 0x0C = BIP-GMAC-256)
 ) -> bytes:
     """Build a tag-48 RSN IE (incl. the 2-byte tag header)."""
     body = b"\x01\x00"  # Version = 1
@@ -57,6 +58,9 @@ def _rsn_ie(
     for a in akms:
         body += b"\x00\x0f\xac" + bytes([a])
     body += struct.pack("<H", rsn_caps)
+    if group_mgmt_cipher is not None:
+        body += struct.pack("<H", 0)  # PMKID Count = 0
+        body += b"\x00\x0f\xac" + bytes([group_mgmt_cipher])
     return bytes([48, len(body)]) + body
 
 
@@ -312,6 +316,7 @@ def test_wpa3_enterprise_192_requires_suite_b_192_gcmp_256_and_pmf():
         pairwise_ciphers=(0x09,),
         akms=(0x0C,),
         rsn_caps=0x00C0,
+        group_mgmt_cipher=0x0C,  # BIP-GMAC-256, mandatory for WPA3-Ent-192
     )
     parsed = WlanFrameParser.parse_80211_frame(_build_beacon(rsn_ie=rsn), -50)
     assert parsed.encryption == "WPA3-EAP-SUITE-B-192-GCMP-256"
@@ -319,6 +324,33 @@ def test_wpa3_enterprise_192_requires_suite_b_192_gcmp_256_and_pmf():
     assert parsed.akms == ["EAP-SUITE-B-192"]
     assert parsed.wpa3 is True
     assert parsed.transition_mode is False
+
+
+def test_suite_b_192_missing_gmcs_is_not_wpa3():
+    """WPA3-Ent-192 mandates a BIP-GMAC-256 GMCS; absent it, not WPA3."""
+    rsn = _rsn_ie(
+        group_cipher=0x09,
+        pairwise_ciphers=(0x09,),
+        akms=(0x0C,),
+        rsn_caps=0x00C0,
+    )
+    parsed = WlanFrameParser.parse_80211_frame(_build_beacon(rsn_ie=rsn), -50)
+    assert parsed.wpa3 is False
+    assert parsed.encryption == "WPA2-EAP-SUITE-B-192-GCMP-256"
+
+
+def test_suite_b_192_wrong_group_cipher_is_not_wpa3():
+    """WPA3-Ent-192 mandates GCMP-256 as the group data cipher; else not WPA3."""
+    rsn = _rsn_ie(
+        group_cipher=0x04,
+        pairwise_ciphers=(0x09,),
+        akms=(0x0C,),
+        rsn_caps=0x00C0,
+        group_mgmt_cipher=0x0C,
+    )
+    parsed = WlanFrameParser.parse_80211_frame(_build_beacon(rsn_ie=rsn), -50)
+    assert parsed.wpa3 is False
+    assert parsed.encryption == "WPA2-EAP-SUITE-B-192-GCMP-256"
 
 
 @pytest.mark.parametrize(

@@ -650,6 +650,7 @@ class WlanFrameParser:
     _WPA3_ENTERPRISE_192_AKM = 0x0C
     _WPA3_DATA_CIPHERS = frozenset({0x04, 0x08, 0x09, 0x0A})
     _GCMP_256_CIPHER = 0x09
+    _BIP_GMAC_256_CIPHER = 0x0C  # 00-0F-AC:12 as a cipher = mandatory WPA3-Ent-192 GMCS
     # TODO: FT-PSK family (suites 4 & 19) is "crackable" but the FT key hierarchy
     #       (PMK-R0 → PMK-R1 → PTK) is more involved than plain PSK.
 
@@ -719,15 +720,25 @@ class WlanFrameParser:
                     akms.append(name)
             pmf_capable = False
             pmf_required = False
+            gmcs: Optional[int] = None
             if p + 2 <= n:
                 rsn_caps = int.from_bytes(tag_data[p:p+2], "little")
                 pmf_capable = bool(rsn_caps & 0x0080)  # Bit 7 (MFPC)
                 pmf_required = bool(rsn_caps & 0x0040)  # Bit 6 (MFPR)
+                p += 2
+                # Optional tail: PMKID Count (2 B) + PMKID List (16 B each) +
+                # Group Management Cipher Suite. GMCS is mandatory for WPA3-Ent-192.
+                if p + 2 <= n:
+                    pmkid_count = int.from_bytes(tag_data[p:p+2], "little")
+                    p += 2 + 16 * pmkid_count
+                    if p + 4 <= n and tag_data[p:p+3] == cls._SUITE_OUI:
+                        gmcs = tag_data[p+3]
             return {
                 "pairwise": pairwise,
                 "pairwise_suites": pairwise_suites,
                 "pairwise_count": pairwise_count,
                 "group_suite": group_suite,
+                "gmcs": gmcs,
                 "akms": akms,
                 "akm_suites": akm_suites,
                 "akm_count": akm_count,
@@ -751,6 +762,8 @@ class WlanFrameParser:
             and rsn["pmf_required"]
             and rsn["pairwise_count"] == 1
             and rsn["pairwise_suites"] == [cls._GCMP_256_CIPHER]
+            and rsn["group_suite"] == cls._GCMP_256_CIPHER
+            and rsn["gmcs"] == cls._BIP_GMAC_256_CIPHER
         ):
             return True, False
 
