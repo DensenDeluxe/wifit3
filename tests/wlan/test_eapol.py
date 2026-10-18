@@ -73,6 +73,112 @@ def test_classify_eapol_msg(key_info, key_data_len, expected):
     assert WlanFrameParser._classify_eapol_msg(key_info, key_data_len) == expected
 
 
+# ---- EAP (EAPOL-Type-0) passive classifier --------------------------------------
+
+_EAP_BSSID = b"\xaa\xbb\xcc\x00\x11\x22"
+_EAP_CLIENT = b"\xde\xad\xbe\xef\x00\x01"
+
+
+def _build_eap_frame(
+    bssid_bytes: bytes,
+    client_bytes: bytes,
+    code: int,
+    identifier: int = 1,
+    eap_type=None,
+    data: bytes = b"",
+    *,
+    from_ds: bool = True,
+    qos: bool = False,
+    ht_control: bool = False,
+    version: int = 1,
+) -> bytes:
+    """Build an 802.11 data frame carrying an EAPOL-Type-0 (EAP) packet.
+
+    from_ds=True is AP->client (Request); from_ds=False is client->AP (Response).
+    qos/ht_control add the header fields the parser's LLC/SNAP window must tolerate.
+    """
+    fc0 = 0x88 if qos else 0x08                      # QoS Data (subtype 8) vs Data
+    fc1 = 0x02 if from_ds else 0x01                  # from_ds vs to_ds
+    if ht_control:
+        fc1 |= 0x80                                  # Order bit -> +4 HT Control
+    addrs = (client_bytes + bssid_bytes + bssid_bytes) if from_ds \
+        else (bssid_bytes + client_bytes + bssid_bytes)
+    mac_hdr = bytes([fc0, fc1]) + b"\x00\x00" + addrs + b"\x00\x00"
+    if qos:
+        mac_hdr += b"\x00\x00"
+    if ht_control:
+        mac_hdr += b"\x00\x00\x00\x00"
+    llc_snap = b"\xaa\xaa\x03\x00\x00\x00\x88\x8e"
+    has_type = eap_type is not None
+    eap = struct.pack(">BBH", code, identifier, 4 + (1 if has_type else 0) + len(data))
+    if has_type:
+        eap += bytes([eap_type]) + data
+    x802_1x = struct.pack(">BBH", version, 0, len(eap))   # 802.1X type 0 = EAP-Packet
+    return mac_hdr + llc_snap + x802_1x + eap
+
+
+@pytest.mark.parametrize(
+    "code, identifier, eap_type, method, expected_type",
+    [
+        (2, 1, 1, "Identity", 1),            # EAP-Response/Identity
+        (1, 2, 13, "EAP-TLS", 13),
+        (1, 3, 25, "PEAP", 25),
+        (1, 4, 21, "EAP-TTLS", 21),
+        (1, 5, 4, "MD5-Challenge", 4),
+        (2, 6, 3, "Nak", 3),
+        (3, 7, None, None, None),            # Success: no Type byte
+        (4, 8, None, None, None),            # Failure: no Type byte
+        (1, 9, 99, None, 99),                # unassigned Type -> no name, still an EapPacket
+    ],
+)
+def test_eap_classification(code, identifier, eap_type, method, expected_type):
+    frame = _build_eap_frame(_EAP_BSSID, _EAP_CLIENT, code, identifier, eap_type)
+    parsed = WlanFrameParser.parse_80211_frame(frame, -50)
+    assert parsed.type == "eap"
+    assert parsed.code == code
+    assert parsed.identifier == identifier
+    assert parsed.eap_type == expected_type
+    assert parsed.method == method
+    assert not hasattr(parsed, "msg_num")    # an EAP packet is not an EAPOL-Key
+
+
+def test_eap_expanded_stays_eapol_so_wps_is_untouched():
+    # EAP-Expanded (0xFE) is the WSC envelope; it must NOT become an EapPacket, so the sink's
+    # existing WPS path (_on_eapol_frame -> _on_wps_m1_frame) keeps seeing it.
+    frame = _build_eap_frame(_EAP_BSSID, _EAP_CLIENT, code=1, identifier=1, eap_type=0xFE)
+    assert WlanFrameParser.parse_80211_frame(frame, -50).type == "eapol"
+
+
+def test_eap_identity_username_is_never_parsed_into_a_field():
+    frame = _build_eap_frame(_EAP_BSSID, _EAP_CLIENT, code=2, identifier=1, eap_type=1,
+                             data=b"alice@corp.example", from_ds=False)
+    parsed = WlanFrameParser.parse_80211_frame(frame, -50)
+    assert parsed.type == "eap" and parsed.method == "Identity"
+    assert not hasattr(parsed, "identity") and not hasattr(parsed, "username")
+    assert "alice" not in (parsed.method or "")
+    assert b"alice@corp.example" in parsed.raw    # only in the transient raw frame
+
+
+@pytest.mark.parametrize("trim", [1, 2, 3, 4, 7])
+def test_eap_truncated_frame_never_raises(trim):
+    frame = _build_eap_frame(_EAP_BSSID, _EAP_CLIENT, code=1, eap_type=25, data=b"\x00" * 4)
+    assert WlanFrameParser.parse_80211_frame(frame[:-trim], -50) is not None
+
+
+@pytest.mark.parametrize("qos, ht_control",
+                         [(False, False), (True, False), (False, True), (True, True)])
+def test_eap_header_offsets_qos_and_ht(qos, ht_control):
+    frame = _build_eap_frame(_EAP_BSSID, _EAP_CLIENT, code=1, eap_type=25,
+                             qos=qos, ht_control=ht_control)
+    assert WlanFrameParser.parse_80211_frame(frame, -50).method == "PEAP"
+
+
+@pytest.mark.parametrize("version", [1, 2, 3])
+def test_eap_is_802_1x_version_agnostic(version):
+    frame = _build_eap_frame(_EAP_BSSID, _EAP_CLIENT, code=1, eap_type=13, version=version)
+    assert WlanFrameParser.parse_80211_frame(frame, -50).method == "EAP-TLS"
+
+
 def test_parser_extracts_full_eapol_fields():
     bssid = bytes.fromhex("AABBCCDDEEFF")
     client = bytes.fromhex("112233445566")

@@ -102,6 +102,16 @@ class EapolPacket(Packet):
 
 
 @dataclass(slots=True, kw_only=True)
+class EapPacket(Packet):
+    """A passively observed EAP (EAPOL-Type-0) frame: Code/Type only, never the identity
+    or credential body. ``method`` is a fixed table name (e.g. "PEAP"), never frame text."""
+    code: int
+    identifier: int
+    eap_type: Optional[int] = None
+    method: Optional[str] = None
+
+
+@dataclass(slots=True, kw_only=True)
 class WepDataPacket(Packet):
     """A WEP-encrypted Data frame: the IV + leading ciphertext the WEP suite feeds on."""
     iv: Optional[bytes] = None

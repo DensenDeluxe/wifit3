@@ -5,7 +5,7 @@ import time
 from collections import deque
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Set
 
 from .handshake import Handshake
 from .identity import ApIdentity, IdKey, IdSource
@@ -62,6 +62,8 @@ class AccessPoint:
     pmf_capable: bool = False
     pmf_required: bool = False
     beacon_protection: bool = False
+    # Passively observed EAP method Type numbers (EAPOL-Type-0), aggregated across clients.
+    observed_eap_methods: Set[int] = field(default_factory=set)
 
     # WPS state decoded from the WPS vendor IE (tag 221, OUI 00:50:F2 type 4).
     wps: bool = False

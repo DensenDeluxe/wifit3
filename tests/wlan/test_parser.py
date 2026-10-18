@@ -796,4 +796,4 @@ def _build_data_frame(subtype: int) -> bytes:
 def test_every_assigned_data_subtype_parses(subtype):
     """Table 9-1 assigns every data subtype but 0x0d; the parser may not narrow that."""
     parsed = WlanFrameParser.parse_80211_frame(_build_data_frame(subtype), -60)
-    assert parsed is not None and parsed.type in ("data", "wep_data", "eapol")
+    assert parsed is not None and parsed.type in ("data", "wep_data", "eapol", "eap")

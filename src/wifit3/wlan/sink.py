@@ -21,7 +21,7 @@ from wifit3.dot11.parser import WlanFrameParser
 from wifit3.dot11.wsc import messages as WSC
 from wifit3.dot11.wsc.identity import apply_wsc_identity
 from wifit3.dot11.packet import (
-    Packet, BeaconPacket, EapolPacket, WepDataPacket, AssocRequestPacket, ProbeReqPacket,
+    Packet, BeaconPacket, EapolPacket, EapPacket, WepDataPacket, AssocRequestPacket, ProbeReqPacket,
 )
 from wifit3.wlan.packet_stats import PacketStats
 from wifit3.wlan.wep_store import WepCaptureStore
@@ -93,7 +93,7 @@ class WlanSink:
         bssid = pkt.bssid
 
         if (
-            frame_type in ("data", "eapol", "wep_data", "assoc_resp", "reassoc_resp",
+            frame_type in ("data", "eap", "eapol", "wep_data", "assoc_resp", "reassoc_resp",
                            "deauth", "disassoc")
             or frame_type.startswith("mgmt_")
         ) and logger.isEnabledFor(TRACE):
@@ -111,6 +111,7 @@ class WlanSink:
         self._on_wepdata_frame(pkt)
         self._track_client(pkt, card_id)
         self._on_eapol_frame(pkt)
+        self._on_eap_frame(pkt)
 
     def record_signal(self, card_id: str, bssid: str, rssi: int) -> None:
         """Update per-card RSSI from a cross-card duplicate: the frame's picture was already folded
@@ -274,7 +275,7 @@ class WlanSink:
         """Register/refresh the client STA behind a frame (assoc, probed SSIDs, decloak)."""
         frame_type = pkt.type
         if frame_type not in (
-            "probe_req", "assoc_req", "reassoc_req", "data", "wep_data", "eapol",
+            "probe_req", "assoc_req", "reassoc_req", "data", "wep_data", "eapol", "eap",
             "deauth", "assoc_resp",
         ):
             return False
@@ -294,7 +295,7 @@ class WlanSink:
         if isinstance(pkt, AssocRequestPacket) and pkt.assoc_akm is not None:
             client.akm_selected = pkt.assoc_akm
 
-        if frame_type in ("assoc_req", "reassoc_req", "data", "wep_data", "eapol") and bssid:
+        if frame_type in ("assoc_req", "reassoc_req", "data", "wep_data", "eapol", "eap") and bssid:
             client.bssid = bssid
 
         if frame_type == "probe_req" and self._is_real_ssid(pkt.ssid):
@@ -364,6 +365,18 @@ class WlanSink:
             hs.pmkid = pmkid
             hs.pmkid_akm = akm
             logger.info(f"[PMKID] {bssid} <-> {client_mac} captured {pmkid.hex()}")
+        return True
+
+    def _on_eap_frame(self, pkt: Packet) -> bool:
+        """Record the passively observed EAP method on the AP and client; never the identity."""
+        if not isinstance(pkt, EapPacket) or pkt.eap_type is None:
+            return False
+        ap = self.access_points.get(pkt.bssid)
+        if ap is not None:
+            ap.observed_eap_methods.add(pkt.eap_type)
+        client = self.clients.get(pkt.client_mac) if pkt.client_mac else None
+        if client is not None:
+            client.eap_methods.add(pkt.eap_type)
         return True
 
     def _on_wps_m1_frame(self, pkt: EapolPacket, ap: AccessPoint) -> bool:

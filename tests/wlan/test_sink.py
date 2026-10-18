@@ -11,6 +11,7 @@ from wifit3.dot11.wsc import messages as WSC
 from wifit3.models import IdKey, IdSource
 from wifit3.wlan.sink import WlanSink
 from wifit3.wlan.packet_stats import PACKET_CLASSES
+from wifit3.dot11.parser import WlanFrameParser
 
 from tests.frames import pkt
 
@@ -153,6 +154,38 @@ def test_wps_m1_identity_fields_are_applied_by_sink():
     assert ap.identity.model_number == "AX10"
     assert ap.identity.device_name == "Office AP"
     assert ap.identity.summary == "TP-Link Archer AX10"
+
+
+def _eap_identity_frame(bssid: bytes, client: bytes, username: bytes) -> bytes:
+    """Client->AP EAP-Response/Identity (802.1X Type 0), with a cleartext username."""
+    eap = struct.pack(">BBH", 2, 1, 4 + 1 + len(username)) + bytes([1]) + username
+    eapol = struct.pack(">BBH", 1, 0, len(eap)) + eap
+    return b"\x08\x01\x00\x00" + bssid + client + bssid + b"\x00\x00" + _LLC_SNAP_EAPOL + eapol
+
+
+def test_eap_method_recorded_on_ap_and_client_without_identity():
+    s = WlanSink()
+    s.update(_beacon(), W0)                                   # the AP must exist first
+    frame = _eap_identity_frame(str_to_mac(BSSID), str_to_mac("de:ad:be:ef:00:01"),
+                                b"alice@corp.example")
+    s.update(WlanFrameParser.parse_80211_frame(frame, -40), W0)
+
+    ap = s.access_points[BSSID]
+    assert ap.observed_eap_methods == {1}                     # EAP-Identity (Type 1)
+    assert s.clients["de:ad:be:ef:00:01"].eap_methods == {1}
+    # Privacy: no handshake is minted from EAP, and the username reaches no model.
+    assert ap.handshakes == {}
+    assert "alice" not in repr(ap) and "alice" not in repr(s.clients["de:ad:be:ef:00:01"])
+
+
+def test_wps_m1_via_parser_still_sets_wps_and_records_no_eap_method():
+    s = WlanSink()
+    s.update(_beacon(), W0)
+    frame = _wps_m1_frame(str_to_mac(BSSID), str_to_mac("02:00:00:00:00:01"))
+    s.update(WlanFrameParser.parse_80211_frame(frame, -45), W0)   # through the parser
+    ap = s.access_points[BSSID]
+    assert ap.wps is True                                     # WPS M1 path intact (EapolPacket)
+    assert ap.observed_eap_methods == set()                   # Expanded is not an EAP method
 
 
 

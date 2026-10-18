@@ -4,7 +4,8 @@
 import struct
 from typing import Optional, List, Dict, Any
 
-from wifit3.dot11.eapol import LLC_SNAP_EAPOL
+from wifit3.dot11.eap import EAP_REQUEST, EAP_RESPONSE, EAP_TYPE_EXPANDED, method_name
+from wifit3.dot11.eapol import EAPOL_TYPE_EAP, EAPOL_TYPE_KEY, LLC_SNAP_EAPOL
 from wifit3.dot11.ie import iter_information_elements
 from wifit3.dot11.mac import mac_to_str
 from wifit3.dot11.wsc.identity import device_type_label, wps_text
@@ -24,7 +25,7 @@ from wifit3.dot11.wsc.messages import (
     ATTR_DEV_NAME as ATTR_DEVICE_NAME,
 )
 from wifit3.dot11.packet import (
-    Packet, BeaconPacket, EapolPacket, WepDataPacket, AssocRequestPacket,
+    Packet, BeaconPacket, EapolPacket, EapPacket, WepDataPacket, AssocRequestPacket,
     AuthPacket, AssocRespPacket, DeauthPacket, ProbeReqPacket,
 )
 
@@ -199,12 +200,9 @@ class WlanFrameParser:
 
     @classmethod
     def _parse_eapol(cls, frame: bytes, header_len: int,
-                     base: Dict[str, Any]) -> Optional["EapolPacket"]:
-        """Find an EAPOL-Key payload after the MAC header and build an EapolPacket, or None
-        if the frame has no EAPOL LLC/SNAP. A frame carrying the EAPOL ethertype but too
-        short to fully decode still returns an EapolPacket ('eapol') with whatever fields it
-        reached. The interface guards on replay_counter before storing.
-        """
+                     base: Dict[str, Any]) -> Optional["Packet"]:
+        """Build the Packet for an 802.1X/EAPOL data frame, or None without EAPOL LLC/SNAP:
+        EAPOL-Key or EAP-Expanded (WSC) -> EapolPacket; a genuine EAP method -> EapPacket."""
         if len(frame) < header_len + 8:
             return None
         # DMA pads the 802.11 header for 4-byte alignment, so slide a window to find the
@@ -213,12 +211,21 @@ class WlanFrameParser:
         if sig_idx == -1:
             return None
 
+        eapol_start = header_len + sig_idx + 8
+        if len(frame) < eapol_start + 2:
+            return EapolPacket(**base, type="eapol")
+        # Split genuine EAP (802.1X Type 0, at offset +1) off to an EapPacket; EAP-Expanded
+        # (WSC) returns None here and stays on the EapolPacket path, so WPS M1 is unchanged.
+        if frame[eapol_start + 1] == EAPOL_TYPE_EAP:
+            eap_pkt = cls._parse_eap(frame, eapol_start, base)
+            if eap_pkt is not None:
+                return eap_pkt
+
         # Key-descriptor offsets from eapol_start: 1=802.1X type (3=EAPOL-Key), 5=Key Info
         # (2B BE), 9=Replay Counter (8B), 17=Key Nonce (32B), 81=Key MIC (16B), 97=Key Data
         # Length (2B BE), 99=Key Data.
         fields: Dict[str, Any] = {}
-        eapol_start = header_len + sig_idx + 8
-        if len(frame) >= eapol_start + 99 and frame[eapol_start + 1] == 3:  # EAPOL-Key
+        if len(frame) >= eapol_start + 99 and frame[eapol_start + 1] == EAPOL_TYPE_KEY:  # EAPOL-Key
             key_info = struct.unpack(">H", frame[eapol_start + 5: eapol_start + 7])[0]
             key_data_len = struct.unpack(">H", frame[eapol_start + 97: eapol_start + 99])[0]
             msg_num = cls._classify_eapol_msg(key_info, key_data_len)
@@ -249,6 +256,24 @@ class WlanFrameParser:
                         if akm is not None:
                             fields["akm"] = akm
         return EapolPacket(**base, type="eapol", **fields)
+
+    @classmethod
+    def _parse_eap(cls, frame: bytes, eapol_start: int,
+                   base: Dict[str, Any]) -> Optional["EapPacket"]:
+        """Classify an EAP packet (802.1X Type 0), reading only through the EAP Type byte --
+        never the identity/credential body. None for EAP-Expanded (WSC) or a too-short header."""
+        eap_start = eapol_start + 4
+        if len(frame) < eap_start + 4:
+            return None
+        code = frame[eap_start]
+        identifier = frame[eap_start + 1]
+        eap_type = None
+        if code in (EAP_REQUEST, EAP_RESPONSE) and len(frame) >= eap_start + 5:
+            eap_type = frame[eap_start + 4]
+        if eap_type == EAP_TYPE_EXPANDED:
+            return None
+        return EapPacket(**base, type="eap", code=code, identifier=identifier,
+                         eap_type=eap_type, method=method_name(eap_type))
 
     @staticmethod
     def _classify_eapol_msg(key_info: int, key_data_len: int) -> int:
