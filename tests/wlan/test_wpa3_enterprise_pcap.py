@@ -8,7 +8,12 @@ import pytest
 from wifit3.dot11.parser import WlanFrameParser
 from wifit3.persist.pcap import read_pcap, write_pcap
 
-_PCAP = Path(__file__).resolve().parent.parent / "fixtures" / "wpa3_enterprise.pcap"
+_FIXTURES_DIR = Path(__file__).resolve().parent.parent / "fixtures"
+# The same seven profiles, two provenances: deterministic-synthetic and captured over the air.
+_FIXTURES = {
+    "synthetic": _FIXTURES_DIR / "wpa3_enterprise.pcap",
+    "ota": _FIXTURES_DIR / "wpa3_enterprise_ota.pcap",
+}
 
 # BSSID -> (encryption label, wpa3, transition_mode) the parser must produce.
 EXPECTED = {
@@ -22,10 +27,10 @@ EXPECTED = {
 }
 
 
-@pytest.fixture(scope="module")
-def parsed():
+@pytest.fixture(scope="module", params=list(_FIXTURES), ids=list(_FIXTURES))
+def parsed(request):
     out = {}
-    for raw, _ts in read_pcap(_PCAP):
+    for raw, _ts in read_pcap(_FIXTURES[request.param]):
         packet = WlanFrameParser.parse_80211_frame(raw, -50)
         out[packet.bssid] = packet
     return out
