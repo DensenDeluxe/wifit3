@@ -66,13 +66,14 @@ def _simplified_akms(akms: List[str]) -> str:
     for name, tok in (
         ("PSK", "PSK"), ("PSK-SHA256", "PSK256"), ("PSK-SHA384", "PSK384"),
         ("FT-PSK", "FT-PSK"), ("FT-PSK-SHA384", "FT-PSK384"),
+        ("EAP", "EAP"), ("EAP-SHA256", "EAP256"), ("FT-EAP", "FT-EAP"),
+        ("EAP-SUITE-B", "SUITE-B"), ("EAP-SUITE-B-192", "SUITE-B-192"),
+        ("FT-EAP-SHA384", "FT-EAP384"),
     ):
         if name in akms:
             parts.append(tok)
     if any("SAE" in a for a in akms):          # SAE / FT-SAE / SAE-EXT-KEY / …
         parts.append("SAE")
-    if any(a.startswith("EAP") or a.startswith("FT-EAP") for a in akms):
-        parts.append("EAP")
     if "OWE" in akms and not parts:
         parts.append("OWE")
     if not parts:

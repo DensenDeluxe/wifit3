@@ -294,7 +294,8 @@ def status_headlines(ap, array, vault) -> list[str]:
                 f"[dim]{breakdown}: deauth a client to force a re-handshake[/dim]"]
 
     if ap.wpa3 and not ap.transition_mode:
-        return ["[dim]● WPA3/SAE: passive capture not applicable[/dim]"]
+        mode = "SAE" if any("SAE" in akm for akm in ap.akms) else "Enterprise"
+        return [f"[dim]● WPA3/{mode}: passive capture not applicable[/dim]"]
 
     if enc in ("OPEN", ""):
         return ["[dim]● Open network: no handshake to capture[/dim]"]

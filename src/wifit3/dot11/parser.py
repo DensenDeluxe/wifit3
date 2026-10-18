@@ -498,6 +498,7 @@ class WlanFrameParser:
         pairwise_cipher: Optional[str] = None
         akms: List[str] = []
         akm_suites: List[int] = []
+        rsn_details: Optional[Dict[str, Any]] = None
         channel_ds: Optional[int] = None
         channel_ht: Optional[int] = None
         channel_vht: Optional[int] = None
@@ -543,6 +544,7 @@ class WlanFrameParser:
                 parsed["rsn_ie_raw"] = bytes(raw_elem)
                 rsn = cls._parse_rsn_ie(tag_data)
                 if rsn is not None:
+                    rsn_details = rsn
                     pairwise_cipher = rsn["pairwise"]
                     akms = rsn["akms"]
                     akm_suites = rsn["akm_suites"]
@@ -568,6 +570,13 @@ class WlanFrameParser:
         if wps_payloads:
             parsed.update(cls._parse_wps_ie(b"".join(wps_payloads)))
 
+        if rsn_details is not None:
+            wpa3_enterprise, enterprise_transition = cls._classify_wpa3_enterprise(
+                rsn_details, has_wpa
+            )
+            has_wpa3 = has_wpa3 or wpa3_enterprise
+            transition_mode = transition_mode or enterprise_transition
+
         # Channel preference: DS Param (tag 3, 2.4 GHz authoritative) → HT Op (tag 61, the
         # only cross-band source; 5 GHz often omits DS per 802.11-2020 9.4.2.3) → VHT Op
         # (tag 192, last resort). Caller falls back to its tuned channel if none present.
@@ -590,6 +599,8 @@ class WlanFrameParser:
             frame=frame,
             has_rsn=has_rsn,
             has_wpa=has_wpa,
+            has_wpa3=has_wpa3,
+            transition_mode=transition_mode,
             akms=akms,
             pairwise_cipher=pairwise_cipher,
         )
@@ -635,6 +646,10 @@ class WlanFrameParser:
     # avoid a wlan->engine import), keep the two in sync.
     _SAE_SUITES = frozenset({0x08, 0x09, 0x18, 0x19})
     _PSK_SUITES = frozenset({0x02, 0x04, 0x06, 0x13, 0x14})
+    _WPA3_ENTERPRISE_AKM = 0x05
+    _WPA3_ENTERPRISE_192_AKM = 0x0C
+    _WPA3_DATA_CIPHERS = frozenset({0x04, 0x08, 0x09, 0x0A})
+    _GCMP_256_CIPHER = 0x09
     # TODO: FT-PSK family (suites 4 & 19) is "crackable" but the FT key hierarchy
     #       (PMK-R0 → PMK-R1 → PTK) is more involved than plain PSK.
 
@@ -662,14 +677,21 @@ class WlanFrameParser:
             # Need at least version (2) + group cipher (4) + 2 size fields (2+2) = 10.
             if n < 10:
                 return None
+            group_suite = (
+                tag_data[5] if tag_data[2:5] == cls._SUITE_OUI else None
+            )
             p = 6  # skip version + group cipher
             pairwise_count = int.from_bytes(tag_data[p:p+2], "little")
             p += 2
             if p + 4 * pairwise_count > n:
                 return None
             pairwise: Optional[str] = None
+            pairwise_suites: List[int] = []
             for i in range(pairwise_count):
-                name = cls._suite_name(tag_data[p:p+4], cls._CIPHER_NAMES)
+                suite = tag_data[p:p + 4]
+                name = cls._suite_name(suite, cls._CIPHER_NAMES)
+                if suite[:3] == cls._SUITE_OUI:
+                    pairwise_suites.append(suite[3])
                 # Stick with the first listed pairwise cipher (the AP's
                 # preferred one). Some APs list TKIP+CCMP for compatibility;
                 # CCMP is conventionally listed first.
@@ -703,13 +725,46 @@ class WlanFrameParser:
                 pmf_required = bool(rsn_caps & 0x0040)  # Bit 6 (MFPR)
             return {
                 "pairwise": pairwise,
+                "pairwise_suites": pairwise_suites,
+                "pairwise_count": pairwise_count,
+                "group_suite": group_suite,
                 "akms": akms,
                 "akm_suites": akm_suites,
+                "akm_count": akm_count,
                 "pmf_capable": pmf_capable,
                 "pmf_required": pmf_required,
             }
         except Exception:
             return None
+
+    @classmethod
+    def _classify_wpa3_enterprise(
+        cls, rsn: Dict[str, Any], has_wpa: bool
+    ) -> tuple[bool, bool]:
+        if has_wpa or not rsn["pmf_capable"]:
+            return False, False
+
+        akm_suites = set(rsn["akm_suites"])
+        if (
+            rsn["akm_count"] == 1
+            and rsn["akm_suites"] == [cls._WPA3_ENTERPRISE_192_AKM]
+            and rsn["pmf_required"]
+            and rsn["pairwise_count"] == 1
+            and rsn["pairwise_suites"] == [cls._GCMP_256_CIPHER]
+        ):
+            return True, False
+
+        modern_ciphers = (
+            rsn["group_suite"] in cls._WPA3_DATA_CIPHERS
+            and rsn["pairwise_count"] == len(rsn["pairwise_suites"])
+            and bool(rsn["pairwise_suites"])
+            and set(rsn["pairwise_suites"]).issubset(cls._WPA3_DATA_CIPHERS)
+        )
+        if not modern_ciphers or cls._WPA3_ENTERPRISE_AKM not in akm_suites:
+            return False, False
+        if 0x01 in akm_suites:
+            return not rsn["pmf_required"], not rsn["pmf_required"]
+        return rsn["pmf_required"], False
 
     @staticmethod
     def _format_encryption_label(
@@ -717,6 +772,8 @@ class WlanFrameParser:
         frame: bytes,
         has_rsn: bool,
         has_wpa: bool,
+        has_wpa3: bool,
+        transition_mode: bool,
         akms: List[str],
         pairwise_cipher: Optional[str],
     ) -> str:
@@ -735,30 +792,36 @@ class WlanFrameParser:
             # contains "SAE", so this also catches WPA3-H2E, matching the
             # suite-number `wpa3` flag so label and flag never disagree.
             has_sae = any("SAE" in a for a in akms)
-            has_psk = "PSK" in akms or "PSK-SHA256" in akms
-            has_eap = any(a.startswith("EAP") or a == "FT-EAP" for a in akms)
+            has_psk = any("PSK" in a for a in akms)
+            enterprise_akms = [
+                a for a in akms if a.startswith("EAP") or a.startswith("FT-EAP")
+            ]
             has_owe = "OWE" in akms
 
-            if has_sae and has_psk:
+            if transition_mode:
                 wpa_tag = "WPA2/WPA3"
-                akm_tag = "PSK+SAE"
-            elif has_sae:
+            elif has_wpa3:
                 wpa_tag = "WPA3"
-                akm_tag = "SAE"
             elif has_owe:
                 wpa_tag = "OWE"
-                akm_tag = None
             else:
                 wpa_tag = "WPA2"
-                if has_eap and has_psk:
-                    akm_tag = "PSK+EAP"
-                elif has_eap:
-                    akm_tag = "EAP"
-                elif has_psk:
-                    akm_tag = "PSK"
-                else:
-                    # Unknown AKM(s): fall back to listing them.
-                    akm_tag = "+".join(akms) if akms else None
+
+            if has_sae and has_psk:
+                akm_tag = "PSK+SAE"
+            elif has_sae:
+                akm_tag = "SAE"
+            elif has_owe:
+                akm_tag = None
+            elif enterprise_akms and has_psk:
+                akm_tag = "PSK+" + "+".join(enterprise_akms)
+            elif enterprise_akms:
+                akm_tag = "+".join(enterprise_akms)
+            elif has_psk:
+                akm_tag = "PSK"
+            else:
+                # Unknown AKM(s): fall back to listing them.
+                akm_tag = "+".join(akms) if akms else None
 
             parts = [wpa_tag]
             if akm_tag:

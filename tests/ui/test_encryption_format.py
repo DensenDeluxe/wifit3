@@ -50,3 +50,14 @@ def test_psk_variants_not_collapsed():
     """A PSK + FT-PSK AP keeps both variants visible, slash-joined."""
     m = format_encryption_markup(_ap(akms=["PSK", "FT-PSK"]), muted="dim")
     assert "(PSK/FT-PSK)" in m
+
+
+def test_enterprise_akm_variants_not_collapsed():
+    variants = {
+        "EAP": "EAP",
+        "EAP-SHA256": "EAP256",
+        "EAP-SUITE-B": "SUITE-B",
+        "EAP-SUITE-B-192": "SUITE-B-192",
+    }
+    for akm, token in variants.items():
+        assert f"({token})" in format_encryption_markup(_ap(akms=[akm]), muted="dim")

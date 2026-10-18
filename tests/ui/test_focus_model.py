@@ -149,6 +149,14 @@ def test_headline_psk_pmkid_is_a_captured_win():
     assert "Captured" in joined and "PMKID ×1" in joined
 
 
+def test_headline_names_wpa3_enterprise_without_calling_it_sae():
+    ap = build_ap(encryption="WPA3", bssid="aa:bb:cc:dd:ee:ff", wpa3=True)
+    ap.akms = ["EAP-SHA256"]
+    headline = " ".join(_headline(ap))
+    assert "WPA3/Enterprise" in headline
+    assert "SAE" not in headline
+
+
 def test_headline_chop_and_crack_states():
     ap = _wep_ap()
     Campaign.active = _FakeWep(chop=True)
