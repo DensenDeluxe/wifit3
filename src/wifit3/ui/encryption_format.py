@@ -6,6 +6,7 @@ from enum import Enum
 from typing import List, Optional
 
 from wifit3.models import AccessPoint
+from wifit3.models.access_point import eap_only
 
 
 # Actionability palette: color signals what's worth targeting:
@@ -108,6 +109,7 @@ class EncryptionSummary:
     cipher: Optional[str]
     wep_ivs: int
     raw: str
+    eap_only: bool = False
 
     @classmethod
     def from_ap(cls, ap: AccessPoint) -> "EncryptionSummary":
@@ -117,6 +119,7 @@ class EncryptionSummary:
             cipher=ap.pairwise_cipher,
             wep_ivs=ap.wep.unique_ivs if ap.wep else 0,
             raw=(ap.encryption or "").upper(),
+            eap_only=eap_only(ap),
         )
 
     def markup(self, detailed: bool = False, muted: str = "dim") -> str:
@@ -125,22 +128,26 @@ class EncryptionSummary:
         show_cipher = detailed and self.cipher is not None
         detail = _detail_markup(self.akms, self.cipher, show_cipher, muted)
 
-        # WPA3 Transition (SAE + PSK): render as WPA3→2.
+        # WPA3 transition: the "2" is attackable only when that half is PSK.
         if self.type is EncryptionType.WPA3_TRANSITION:
-            head = f"[bright_red]WPA3[/bright_red]→[{_ATTACKABLE}]2[/{_ATTACKABLE}]"
+            tail = _NO_ATTACK_YET if self.eap_only else _ATTACKABLE
+            head_color = _NO_ATTACK_YET if self.eap_only else "bright_red"
+            head = f"[{head_color}]WPA3[/{head_color}]→[{tail}]2[/{tail}]"
             return head if not detailed else head + detail
 
-        # Pure WPA3-SAE: no usable attack yet.
+        # Pure WPA3. SAE is out of scope; 802.1X has no attack yet.
         if self.type is EncryptionType.WPA3:
-            return "[bright_red]WPA3[/bright_red]" + detail
+            color = _NO_ATTACK_YET if self.eap_only else "bright_red"
+            return f"[{color}]WPA3[/{color}]" + detail
 
         # OWE (Enhanced Open): no attack yet.
         if self.type is EncryptionType.OWE:
             return f"[{_NO_ATTACK_YET}]OWE[/{_NO_ATTACK_YET}]"
 
-        # Any RSN-based modern WPA2: attackable.
+        # RSN WPA2. PSK is attackable; 802.1X has no passphrase attack yet.
         if self.type is EncryptionType.WPA2:
-            return f"[{_ATTACKABLE}]WPA2[/{_ATTACKABLE}]" + detail
+            color = _NO_ATTACK_YET if self.eap_only else _ATTACKABLE
+            return f"[{color}]WPA2[/{color}]" + detail
 
         if self.type is EncryptionType.OPEN:
             return f"[{muted}]OPEN[/{muted}]"

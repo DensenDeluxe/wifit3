@@ -13,6 +13,20 @@ from .handshake import Handshake
 from .identity import ApIdentity, IdKey, IdSource
 from .security import Severity, SecurityWarning
 
+# 00-0F-AC EAP family; keep in sync with crack.handshake._EAP_AKMS.
+_EAP_AKM_SUITES = frozenset({1, 3, 5, 11, 12, 13})
+
+
+def eap_only(ap) -> bool:
+    """True when every advertised AKM is 802.1X (no PSK and no SAE)."""
+    suites = set(getattr(ap, "akm_suites", None) or ())
+    if suites:
+        return suites <= _EAP_AKM_SUITES
+    akms = getattr(ap, "akms", None) or ()
+    return bool(akms) and all(
+        a.startswith("EAP") or a.startswith("FT-EAP") for a in akms
+    )
+
 
 @dataclass
 class WepStats:
@@ -165,7 +179,7 @@ class AccessPoint:
             out.append(SecurityWarning(
                 "pmf-optional", Severity.WARNING,
                 "PMF optional: non-PMF clients remain deauth/disassoc-vulnerable"))
-        if self.wpa3 and posture is not PmfPosture.REQUIRED:
+        if self.wpa3 and not self.transition_mode and posture is not PmfPosture.REQUIRED:
             out.append(SecurityWarning(
                 "wpa3-without-pmf", Severity.CRITICAL,
                 "WPA3 advertised without required PMF (non-compliant, downgrade-exposed)"))

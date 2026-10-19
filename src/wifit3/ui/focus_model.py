@@ -14,7 +14,9 @@ from ..campaigns.pmkid import PmkidHarvestAttack
 from ..campaigns.wep import WepCampaign
 from wifit3.crack.wep import CRACK_READY_THRESHOLD
 from wifit3.crack.handshake import pmkid_crackable
+from wifit3.dot11.eap import method_name
 from wifit3.models import CaptureType, IdKey, IdSource
+from wifit3.models.access_point import eap_only
 from wifit3.persist.config import Config
 from ..campaigns.pin import WpsCampaign
 from ..campaigns.deauth import DeauthCampaign
@@ -155,6 +157,20 @@ def encryption_chip(ap) -> str:
     return format_encryption_markup(ap, detailed=False)
 
 
+# Identity, Notification, Nak: EAP framing, not the authentication method.
+_EAP_FRAMING_TYPES = frozenset({1, 2, 3})
+
+
+def eap_methods_markup(ap) -> str | None:
+    """Observed EAP methods for the Focus footer, or None before any EAPOL-Type-0."""
+    seen = getattr(ap, "observed_eap_methods", None)
+    if not seen:
+        return None
+    types = sorted(t for t in seen if t not in _EAP_FRAMING_TYPES) or sorted(seen)
+    labels = [method_name(t) or f"type {t}" for t in types]
+    return "[dim]EAP:[/dim] " + " · ".join(labels)
+
+
 def pmf_status_markup(ap) -> str:
     """PMF status for the Focus footer.
     Disabled (dim) → Optional (orange) → Required (red)."""
@@ -222,6 +238,9 @@ def status_under_dash(ap, array, now: float) -> list[str]:
         lock = "[red]🔒[/red]" if ap.wps_locked else "[green]🔓[/green]"
         ver = f"{ap.wps_version} " if ap.wps_version else ""
         parts.append(f"[dim]WPS:[/dim] {ver}{lock}")
+    eap = eap_methods_markup(ap)
+    if eap:
+        parts.append(eap)
     if parts:
         lines.append("  ·  ".join(parts))
     return lines
@@ -288,6 +307,13 @@ def status_headlines(ap, array, vault) -> list[str]:
             bits.append(f"PMKID ×{n_pmkid}")
         return ["[black bold on green] ✓ Captured [/black bold on green] " + " · ".join(bits),
                 f"[dim]saved to {Config.captures_dir}[/dim]"]
+    if eap_only(ap):
+        if ap.wpa3 and ap.transition_mode:
+            return ["[dim]● WPA3/Enterprise transition: passive capture not applicable[/dim]"]
+        if ap.wpa3:
+            return ["[dim]● WPA3/Enterprise: passive capture not applicable[/dim]"]
+        return ["[dim]● WPA2/Enterprise: passive capture not applicable[/dim]"]
+
     if n_partial:
         breakdown = " · ".join(f"M{m}×{msg_counts[m]}" for m in sorted(msg_counts))
         return ["[yellow]◌ Capturing handshake[/yellow]",

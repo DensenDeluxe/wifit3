@@ -49,3 +49,10 @@ def test_wpa3_without_required_pmf_is_flagged():
 def test_wpa3_with_required_pmf_is_clean():
     ap = _ap(wpa3=True, pmf_capable=True, pmf_required=True)
     assert ap.security_warnings == []
+
+
+def test_wpa3_transition_optional_pmf_is_not_a_compliance_failure():
+    """WPA3 transition (personal or enterprise) is required to leave MFPR clear."""
+    ap = _ap(wpa3=True, transition_mode=True, pmf_capable=True, pmf_required=False,
+             akm_suites=[1, 5])
+    assert {w.code for w in ap.security_warnings} == {"pmf-optional"}

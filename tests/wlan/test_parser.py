@@ -310,6 +310,49 @@ def test_enterprise_suite_b_preserves_observed_akm():
     assert parsed.wpa3 is False
 
 
+def test_wpa3_enterprise_transition_allows_ft_eap():
+    rsn = _rsn_ie(akms=(0x01, 0x03, 0x05), rsn_caps=0x0080)
+    parsed = WlanFrameParser.parse_80211_frame(_build_beacon(rsn_ie=rsn), -50)
+    assert parsed.encryption == "WPA2/WPA3-EAP+FT-EAP+EAP-SHA256-CCMP"
+    assert parsed.akm_suites == [0x01, 0x03, 0x05]
+    assert parsed.wpa3 is True
+    assert parsed.transition_mode is True
+
+
+def test_wpa3_enterprise_only_allows_ft_eap_when_pmf_required():
+    rsn = _rsn_ie(akms=(0x05, 0x03), rsn_caps=0x00C0)
+    parsed = WlanFrameParser.parse_80211_frame(_build_beacon(rsn_ie=rsn), -50)
+    assert parsed.encryption == "WPA3-EAP-SHA256+FT-EAP-CCMP"
+    assert parsed.wpa3 is True
+    assert parsed.transition_mode is False
+
+
+def test_wpa3_enterprise_192_ft_akm_is_wpa3():
+    """192-bit mode may advertise FT-EAP-SHA384 (13) alone or beside Suite-B-192 (12)."""
+    for akms, label in (
+        ((0x0D,), "WPA3-FT-EAP-SHA384-GCMP-256"),
+        ((0x0C, 0x0D), "WPA3-EAP-SUITE-B-192+FT-EAP-SHA384-GCMP-256"),
+    ):
+        rsn = _rsn_ie(
+            group_cipher=0x09,
+            pairwise_ciphers=(0x09,),
+            akms=akms,
+            rsn_caps=0x00C0,
+            group_mgmt_cipher=0x0C,
+        )
+        parsed = WlanFrameParser.parse_80211_frame(_build_beacon(rsn_ie=rsn), -50)
+        assert parsed.encryption == label
+        assert parsed.wpa3 is True
+        assert parsed.transition_mode is False
+
+
+def test_wpa3_enterprise_192_ft_without_gcmp_256_is_not_wpa3():
+    rsn = _rsn_ie(akms=(0x0D,), rsn_caps=0x00C0, group_mgmt_cipher=0x0C)
+    parsed = WlanFrameParser.parse_80211_frame(_build_beacon(rsn_ie=rsn), -50)
+    assert parsed.wpa3 is False
+    assert parsed.encryption == "WPA2-FT-EAP-SHA384-CCMP"
+
+
 def test_wpa3_enterprise_192_requires_suite_b_192_gcmp_256_and_pmf():
     rsn = _rsn_ie(
         group_cipher=0x09,

@@ -118,6 +118,10 @@ def test_visible_and_ineligible():
     assert EvilTwinCampaign.visible(_target())
     assert EvilTwinCampaign.visible(SimpleNamespace(ssid=None, akm_suites=[2])) is False
     assert EvilTwinCampaign.visible(SimpleNamespace(ssid="x", akm_suites=[])) is False
+    assert EvilTwinCampaign.visible(SimpleNamespace(ssid="Corp", akm_suites=[1])) is False
+    assert EvilTwinCampaign.visible(SimpleNamespace(ssid="Corp", akm_suites=[1, 5, 12])) is False
+    assert EvilTwinCampaign.visible(SimpleNamespace(ssid="Corp", akm_suites=[1, 2])) is True
+    assert EvilTwinCampaign.visible(SimpleNamespace(ssid="Corp", akm_suites=[8])) is True
     no_beacon = SimpleNamespace(bssid=_BSSID, ssid=_SSID, channel=11,
                                 last_beacon_frame=None, akm_suites=[2])
     assert EvilTwinCampaign.ineligible_reason(no_beacon) == "no beacon captured yet"

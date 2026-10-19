@@ -20,7 +20,7 @@ from wifit3.campaigns.pin import WpsCampaign
 from wifit3.campaigns.pmkid import PmkidHarvestAttack
 from wifit3.campaigns.wep import WepCampaign
 from wifit3.crack.wep import CRACK_READY_THRESHOLD
-from wifit3.models import AccessPoint, Handshake, IdKey, IdSource
+from wifit3.models import AccessPoint, Handshake, HandshakeMessage, IdKey, IdSource
 from wifit3.ui import focus_model as fm
 from tests.wlan.mocks import build_ap
 from wifit3.ui.screens.focus_v2 import FocusViewV2
@@ -155,6 +155,53 @@ def test_headline_names_wpa3_enterprise_without_calling_it_sae():
     headline = " ".join(_headline(ap))
     assert "WPA3/Enterprise" in headline
     assert "SAE" not in headline
+    assert "transition" not in headline
+
+
+def test_headline_wpa2_enterprise_does_not_promise_a_psk_capture():
+    ap = build_ap(encryption="WPA2", akms=["EAP"], akm_suites=[1])
+    headline = " ".join(_headline(ap))
+    assert "WPA2/Enterprise" in headline
+    assert "Listening for handshake" not in headline
+    assert "PMKID" not in headline
+
+
+def test_headline_enterprise_transition_does_not_promise_a_psk_capture():
+    ap = build_ap(
+        encryption="WPA2/WPA3-EAP+EAP-SHA256-CCMP", wpa3=True, transition_mode=True,
+        akms=["EAP", "EAP-SHA256"], akm_suites=[1, 5],
+    )
+    headline = " ".join(_headline(ap))
+    assert "WPA3/Enterprise transition" in headline
+    assert "Listening for handshake" not in headline
+
+
+def test_headline_enterprise_partial_eapol_does_not_ask_for_deauth():
+    hs = Handshake(bssid="aa:bb:cc:dd:ee:ff", client_mac="11:22:33:44:55:66",
+                   akm_offered=[1])
+    hs.add_message(HandshakeMessage(
+        raw=b"m1", msg_num=1, replay_hex="0000000000000001", nonce=b"\x11" * 32,
+        mic=bytes(16), key_data_len=0, eapol_payload=bytes(99), akm=1,
+    ))
+    ap = build_ap(encryption="WPA2", akms=["EAP"], akm_suites=[1])
+    ap.handshakes = {"11:22:33:44:55:66": hs}
+    joined = " ".join(_headline(ap))
+    assert "WPA2/Enterprise" in joined
+    assert "deauth" not in joined.lower()
+
+
+def test_status_footer_names_observed_eap_method():
+    ap = build_ap(akms=["EAP"], akm_suites=[1], pmf_capable=True, pmf_required=True)
+    ap.observed_eap_methods.update({1, 25})
+    lines = fm.status_under_dash(ap, None, 0)
+    assert "PEAP" in lines[1]
+    assert "Identity" not in lines[1]
+
+
+def test_status_footer_shows_identity_until_a_method_arrives():
+    ap = build_ap(akms=["EAP"], akm_suites=[1])
+    ap.observed_eap_methods.add(1)
+    assert "Identity" in " ".join(fm.status_under_dash(ap, None, 0))
 
 
 def test_headline_chop_and_crack_states():
@@ -607,10 +654,20 @@ async def test_buttons_unconfirmed_encryption_shows_pmkid_disabled_with_reason(b
 
 
 @pytest.mark.asyncio(loop_scope="module")
-async def test_buttons_enterprise_hides_pmkid(buttons_screen):
-    """802.1X (enterprise) PMK isn't dictionary-crackable → no PMKID button."""
+async def test_buttons_enterprise_hides_psk_attacks(buttons_screen):
+    """802.1X-only: no PSK to harvest, deauth, or downgrade onto a PSK twin."""
     b = _buttons(buttons_screen, _rsn_ap(akms=("802.1X",)))
     assert b["btn-pmkid"].display is False
+    assert b["btn-deauth"].display is False
+    assert b["btn-eviltwin"].display is False
+
+
+@pytest.mark.asyncio(loop_scope="module")
+async def test_buttons_mixed_psk_and_eap_keeps_psk_attacks(buttons_screen):
+    b = _buttons(buttons_screen, _rsn_ap(akms=("PSK", "EAP")))
+    assert b["btn-pmkid"].display is True
+    assert b["btn-deauth"].display is True
+    assert b["btn-eviltwin"].display is True
 
 
 def test_card_dynamic_each_state():

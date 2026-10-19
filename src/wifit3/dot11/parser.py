@@ -672,7 +672,8 @@ class WlanFrameParser:
     _SAE_SUITES = frozenset({0x08, 0x09, 0x18, 0x19})
     _PSK_SUITES = frozenset({0x02, 0x04, 0x06, 0x13, 0x14})
     _WPA3_ENTERPRISE_AKM = 0x05
-    _WPA3_ENTERPRISE_192_AKM = 0x0C
+    # Suite-B-192 (12) and its FT counterpart (13). A 192-bit BSS may advertise either or both.
+    _WPA3_ENTERPRISE_192_AKMS = frozenset({0x0C, 0x0D})
     _WPA3_DATA_CIPHERS = frozenset({0x04, 0x08, 0x09, 0x0A})
     _GCMP_256_CIPHER = 0x09
     _BIP_GMAC_256_CIPHER = 0x0C  # 00-0F-AC:12 as a cipher = mandatory WPA3-Ent-192 GMCS
@@ -782,8 +783,9 @@ class WlanFrameParser:
 
         akm_suites = set(rsn["akm_suites"])
         if (
-            rsn["akm_count"] == 1
-            and rsn["akm_suites"] == [cls._WPA3_ENTERPRISE_192_AKM]
+            akm_suites
+            and akm_suites <= cls._WPA3_ENTERPRISE_192_AKMS
+            and rsn["akm_count"] == len(rsn["akm_suites"])
             and rsn["pmf_required"]
             and rsn["pairwise_count"] == 1
             and rsn["pairwise_suites"] == [cls._GCMP_256_CIPHER]

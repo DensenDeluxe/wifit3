@@ -14,6 +14,7 @@ from wifit3.dot11 import str_to_mac
 from wifit3.dot11.ap import beacon_clone
 from wifit3.dot11.csa import build_csa_beacon
 from wifit3.crack.handshake import crackable_pairs, pmkid_crackable
+from wifit3.models.access_point import eap_only
 from wifit3.campaigns.campaign import Campaign
 from wifit3.campaigns.eviltwin.fake_ap import FakeAP
 from wifit3.campaigns.eviltwin.punter import Punter, PuntMode, BURST_SIZE, FRAME_GAP_SEC
@@ -64,7 +65,8 @@ class EvilTwinCampaign(Campaign):
 
     @classmethod
     def visible(cls, ap) -> bool:
-        return bool(ap.ssid) and bool(ap.akm_suites)
+        """RSN networks a PSK twin can harvest. 802.1X-only has no passphrase."""
+        return bool(ap.ssid) and bool(ap.akm_suites) and not eap_only(ap)
 
     @classmethod
     def ineligible_reason(cls, ap) -> Optional[str]:

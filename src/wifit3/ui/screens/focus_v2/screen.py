@@ -34,6 +34,7 @@ from textual.screen import Screen
 from textual.widgets import Button, Footer, Header, Static
 
 from wifit3.campaigns import treelog
+from wifit3.models.access_point import eap_only
 from wifit3.campaigns.campaign import Campaign
 from wifit3.campaigns.pmkid import PmkidHarvestAttack
 from wifit3.campaigns.wep import WepCampaign
@@ -500,8 +501,13 @@ class FocusViewV2(Screen):
         enc = (ap.encryption or "").upper()
         if enc == "WEP":
             self._log("[bold italic]Passively listening[/bold italic] for [bold]WEP IVs[/bold]")
-        elif enc not in ("OPEN", "", "WPA3 "):
-            # 'Crackable' because the pipeline filters SAE-only out.
+        elif enc in ("OPEN", ""):
+            pass
+        elif eap_only(ap):
+            self._log("[dim]802.1X Enterprise: no passphrase to capture[/dim]")
+        elif ap.wpa3 and not ap.transition_mode:
+            self._log("[dim]WPA3/SAE: passive capture not applicable[/dim]")
+        else:
             self._log("[bold italic]Passively listening[/bold italic] for")
             self._log(treelog.branch("Crackable 4-Way [bold]Handshakes[/bold]"))
             self._log(treelog.leaf("Crackable [bold]PMKIDs[/bold]"))

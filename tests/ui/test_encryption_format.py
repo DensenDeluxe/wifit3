@@ -61,3 +61,54 @@ def test_enterprise_akm_variants_not_collapsed():
     }
     for akm, token in variants.items():
         assert f"({token})" in format_encryption_markup(_ap(akms=[akm]), muted="dim")
+
+
+def test_wpa2_psk_stays_attackable_green():
+    m = format_encryption_markup(_ap(akms=["PSK"], akm_suites=[2]), muted="dim")
+    assert "[bright_green]WPA2[/bright_green]" in m
+
+
+def test_wpa2_enterprise_is_not_painted_attackable():
+    m = format_encryption_markup(_ap(akms=["EAP"], akm_suites=[1]), muted="dim")
+    assert "[yellow]WPA2[/yellow]" in m
+    assert "bright_green" not in m
+    assert "(EAP)" in m
+
+
+def test_wpa3_enterprise_is_not_painted_like_sae():
+    m = format_encryption_markup(
+        _ap(akms=["EAP-SHA256"], akm_suites=[5], wpa3=True), muted="dim",
+    )
+    assert "[yellow]WPA3[/yellow]" in m
+    assert "bright_red" not in m
+    assert "(EAP256)" in m
+
+
+def test_wpa3_sae_stays_out_of_scope_red():
+    m = format_encryption_markup(_ap(akms=["SAE"], akm_suites=[8], wpa3=True), muted="dim")
+    assert "[bright_red]WPA3[/bright_red]" in m
+
+
+def test_wpa3_personal_transition_keeps_attackable_wpa2_half():
+    m = format_encryption_markup(
+        _ap(akms=["PSK", "SAE"], akm_suites=[2, 8], wpa3=True, transition_mode=True),
+        muted="dim",
+    )
+    assert "[bright_red]WPA3[/bright_red]→[bright_green]2[/bright_green]" in m
+
+
+def test_wpa3_enterprise_transition_is_not_attackable():
+    m = format_encryption_markup(
+        _ap(akms=["EAP", "EAP-SHA256"], akm_suites=[1, 5], wpa3=True, transition_mode=True),
+        muted="dim",
+    )
+    assert "[yellow]WPA3[/yellow]→[yellow]2[/yellow]" in m
+    assert "bright_green" not in m
+
+
+def test_mixed_psk_and_eap_stays_attackable():
+    m = format_encryption_markup(
+        _ap(akms=["PSK", "EAP"], akm_suites=[2, 1]), muted="dim",
+    )
+    assert "[bright_green]WPA2[/bright_green]" in m
+    assert "(PSK/EAP)" in m
