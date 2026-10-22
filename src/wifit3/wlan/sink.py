@@ -21,12 +21,15 @@ from wifit3.dot11.parser import WlanFrameParser
 from wifit3.dot11.wsc import messages as WSC
 from wifit3.dot11.wsc.identity import apply_wsc_identity
 from wifit3.dot11.packet import (
-    Packet, BeaconPacket, EapolPacket, WepDataPacket, AssocRequestPacket, ProbeReqPacket,
+    Packet, BeaconPacket, EapolPacket, EapPacket, WepDataPacket, AssocRequestPacket,
+    AssocRespPacket, ProbeReqPacket, is_group_mac,
 )
 from wifit3.wlan.packet_stats import PacketStats
 from wifit3.wlan.wep_store import WepCaptureStore
 
 logger = logging.getLogger(__name__)
+
+_ASSOCIATION_AKM_WINDOW_S = 5.0
 
 
 def _set_result(fut, value) -> None:
@@ -41,6 +44,10 @@ def _enc_rank(label: str) -> int:
     if label == "WEP":
         return 1
     return 2  # any IE-derived label
+
+
+def _security_evidence_rank(label: str, rsn_valid: bool) -> tuple[int, bool]:
+    return _enc_rank(label), rsn_valid
 
 
 def _fmt_frame(tag: str, ftype: str, src, dest, bssid) -> str:
@@ -83,6 +90,25 @@ class WlanSink:
     def _record_client_signal(self, client: Client, card_id: str, rssi: int) -> None:
         client.signal_by_card[card_id] = self._smooth(client.signal_history, card_id, rssi)
 
+    @staticmethod
+    def _clear_client_akm(client: Client) -> None:
+        client.akm_selected = None
+        client.akm_selected_bssid = None
+        client.akm_selected_at = None
+
+    @classmethod
+    def _current_client_akm(cls, client: Client, bssid: str) -> Optional[int]:
+        selected_at = client.akm_selected_at
+        if (
+            client.akm_selected_bssid == bssid
+            and selected_at is not None
+            and 0 <= time.monotonic() - selected_at <= _ASSOCIATION_AKM_WINDOW_S
+        ):
+            return client.akm_selected
+        if client.akm_selected_bssid == bssid:
+            cls._clear_client_akm(client)
+        return None
+
     # ----- ingest ------------------------------------------------------------
 
     def update(self, pkt: Packet, card_id: str, channel_hint: int = 1) -> None:
@@ -93,7 +119,7 @@ class WlanSink:
         bssid = pkt.bssid
 
         if (
-            frame_type in ("data", "eapol", "wep_data", "assoc_resp", "reassoc_resp",
+            frame_type in ("data", "eap", "eapol", "wep_data", "assoc_resp", "reassoc_resp",
                            "deauth", "disassoc")
             or frame_type.startswith("mgmt_")
         ) and logger.isEnabledFor(TRACE):
@@ -111,6 +137,7 @@ class WlanSink:
         self._on_wepdata_frame(pkt)
         self._track_client(pkt, card_id)
         self._on_eapol_frame(pkt)
+        self._on_eap_frame(pkt)
 
     def record_signal(self, card_id: str, bssid: str, rssi: int) -> None:
         """Update per-card RSSI from a cross-card duplicate: the frame's picture was already folded
@@ -148,9 +175,12 @@ class WlanSink:
         enc = pkt.encryption
         akms = pkt.akms
         akm_suites = pkt.akm_suites
+        akm_selectors = pkt.akm_selectors
+        rsn_valid = pkt.rsn_valid
         pairwise_cipher = pkt.pairwise_cipher
         wpa3 = pkt.wpa3
         transition_mode = pkt.transition_mode
+        wpa3_enterprise_transition_profile = pkt.wpa3_enterprise_transition_profile
         pmf_capable = pkt.pmf_capable
         pmf_required = pkt.pmf_required
         beacon_protection = pkt.beacon_protection
@@ -174,10 +204,13 @@ class WlanSink:
                 encryption=enc,
                 akms=list(akms),
                 akm_suites=list(akm_suites),
+                akm_selectors=list(akm_selectors),
+                rsn_valid=rsn_valid,
                 pairwise_cipher=pairwise_cipher,
                 beacons=1 if frame_type == "beacon" else 0,
                 wpa3=wpa3,
                 transition_mode=transition_mode,
+                wpa3_enterprise_transition_profile=wpa3_enterprise_transition_profile,
                 pmf_capable=pmf_capable,
                 pmf_required=pmf_required,
                 beacon_protection=beacon_protection,
@@ -217,14 +250,18 @@ class WlanSink:
             ap.channel = channel
             if old_channel != channel:
                 self._recompute_siblings_for(bssid)
-            # Keep the strongest encryption evidence ever seen (see _enc_rank).
-            if _enc_rank(enc) >= _enc_rank(ap.encryption):
+            replace_security = _security_evidence_rank(
+                enc, rsn_valid) >= _security_evidence_rank(ap.encryption, ap.rsn_valid)
+            if replace_security:
                 ap.encryption = enc
                 ap.akms = list(akms)
                 ap.akm_suites = list(akm_suites)
+                ap.akm_selectors = list(akm_selectors)
+                ap.rsn_valid = rsn_valid
                 ap.pairwise_cipher = pairwise_cipher
                 ap.wpa3 = wpa3
                 ap.transition_mode = transition_mode
+                ap.wpa3_enterprise_transition_profile = wpa3_enterprise_transition_profile
                 ap.pmf_capable = pmf_capable
                 ap.pmf_required = pmf_required
                 ap.beacon_protection = beacon_protection
@@ -250,7 +287,7 @@ class WlanSink:
 
         # Stash the latest RSNIE
         rsn_ie = pkt.rsn_ie_raw
-        if rsn_ie:
+        if rsn_ie and (rsn_valid or not ap.rsn_valid):
             ap.rsn_ie = rsn_ie
 
         # Stash the latest beacon and back-fill handshakes missing one.
@@ -263,6 +300,10 @@ class WlanSink:
                         hs.beacon_frame = raw_beacon
                     if ap.akm_suites and not hs.akm_offered:
                         hs.akm_offered = list(ap.akm_suites)
+                    if ap.akm_selectors and not hs.akm_selectors:
+                        hs.akm_selectors = list(ap.akm_selectors)
+                    if ap.rsn_valid or ap.rsn_ie is not None:
+                        hs.rsn_evidence = True
         return True
 
     def _on_wepdata_frame(self, pkt: Packet) -> bool:
@@ -281,12 +322,21 @@ class WlanSink:
         """Register/refresh the client STA behind a frame (assoc, probed SSIDs, decloak)."""
         frame_type = pkt.type
         if frame_type not in (
-            "probe_req", "assoc_req", "reassoc_req", "data", "wep_data", "eapol",
-            "deauth", "assoc_resp",
+            "probe_req", "assoc_req", "reassoc_req", "data", "wep_data", "eapol", "eap",
+            "deauth", "disassoc", "assoc_resp", "reassoc_resp",
         ):
             return False
         bssid = pkt.bssid
         rssi = pkt.rssi
+        if (
+            frame_type in ("deauth", "disassoc")
+            and pkt.source == bssid
+            and is_group_mac(pkt.dest)
+        ):
+            for client in self.clients.values():
+                if client.akm_selected_bssid == bssid:
+                    self._clear_client_akm(client)
+            return True
         client_mac = pkt.client_mac
         if not client_mac or client_mac in self.own_macs:
             return True
@@ -297,12 +347,22 @@ class WlanSink:
         self._record_client_signal(client, card_id, rssi)
         client.packets += 1
 
-        # The client's chosen AKM, from its (Re)Assoc Request RSN IE.
-        if isinstance(pkt, AssocRequestPacket) and pkt.assoc_akm is not None:
-            client.akm_selected = pkt.assoc_akm
-
-        if frame_type in ("assoc_req", "reassoc_req", "data", "wep_data", "eapol") and bssid:
+        if frame_type in ("assoc_req", "reassoc_req", "data", "wep_data", "eapol", "eap") and bssid:
+            if client.bssid != bssid:
+                self._clear_client_akm(client)
             client.bssid = bssid
+
+        if isinstance(pkt, AssocRequestPacket):
+            client.akm_selected = pkt.assoc_akm
+            client.akm_selected_bssid = bssid if pkt.assoc_akm is not None else None
+            client.akm_selected_at = time.monotonic() if pkt.assoc_akm is not None else None
+
+        if isinstance(pkt, AssocRespPacket) and pkt.status is not None:
+            if pkt.status != 0 and client.akm_selected_bssid == bssid:
+                self._clear_client_akm(client)
+
+        if frame_type in ("deauth", "disassoc") and client.akm_selected_bssid == bssid:
+            self._clear_client_akm(client)
 
         if frame_type == "probe_req" and self._is_real_ssid(pkt.ssid):
             client.probed_ssids.add(pkt.ssid)
@@ -335,11 +395,15 @@ class WlanSink:
                 client_mac=client_mac,
                 beacon_frame=ap.last_beacon_frame,
                 akm_offered=list(ap.akm_suites),
+                akm_selectors=list(ap.akm_selectors),
+                rsn_evidence=ap.rsn_valid or ap.rsn_ie is not None,
             )
             ap.handshakes[client_mac] = hs
-        elif ap.akm_suites:
+        elif ap.akm_suites or ap.akm_selectors or ap.rsn_valid or ap.rsn_ie is not None:
             # Refresh in case the handshake was created before the AP's RSN IE was known.
             hs.akm_offered = list(ap.akm_suites)
+            hs.akm_selectors = list(ap.akm_selectors)
+            hs.rsn_evidence = ap.rsn_valid or ap.rsn_ie is not None
 
         # AKM this association negotiated, snapshotted now: this frame's own RSN IE
         # (M2/M3), else the client's assoc-time selection.
@@ -347,7 +411,7 @@ class WlanSink:
         if akm is None:
             client_obj = self.clients.get(client_mac)
             if client_obj is not None:
-                akm = client_obj.akm_selected
+                akm = self._current_client_akm(client_obj, bssid)
 
         # Forged MACs keep a Handshake (for PMKID) but skip the EAPOL list.
         if client_mac not in self.own_macs and not hs.has_message(raw_frame):
@@ -376,6 +440,18 @@ class WlanSink:
             if pkt.key_info is not None:
                 hs.pmkid_key_descriptor_version = pkt.key_info & 3
             logger.info(f"[PMKID] {bssid} <-> {client_mac} captured {pmkid.hex()}")
+        return True
+
+    def _on_eap_frame(self, pkt: Packet) -> bool:
+        """Record the passively observed EAP method on the AP and client; never the identity."""
+        if not isinstance(pkt, EapPacket) or pkt.eap_type is None:
+            return False
+        ap = self.access_points.get(pkt.bssid)
+        if ap is not None:
+            ap.observed_eap_methods.add(pkt.eap_type)
+        client = self.clients.get(pkt.client_mac) if pkt.client_mac else None
+        if client is not None:
+            client.eap_methods.add(pkt.eap_type)
         return True
 
     def _on_wps_m1_frame(self, pkt: EapolPacket, ap: AccessPoint) -> bool:
