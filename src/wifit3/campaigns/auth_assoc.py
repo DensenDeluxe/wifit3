@@ -244,7 +244,7 @@ class Association:
                 self.fail_reason = f"Auth rejected (status {pkt.status}: {desc})"
                 logger.info("<- Auth Resp rejected (status %s: %s) from %s", pkt.status, desc, self.bssid)
         elif isinstance(pkt, DeauthPacket):
-            kind = "disassoc" if getattr(pkt, "type", "") == "mgmt_10" else "deauth"
+            kind = "disassoc" if pkt.type == "disassoc" else "deauth"
             desc = reason_description(pkt.reason)
             self.fail_reason = f"{kind} (reason {pkt.reason}: {desc})"
             logger.info("<- %s (reason %s: %s) from %s", kind.upper(), pkt.reason, desc, self.bssid)

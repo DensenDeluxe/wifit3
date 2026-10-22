@@ -54,3 +54,27 @@ def write_pcap(path: Path, records: Iterable[tuple[bytes, float]]) -> int:
             f.write(frame)
             count += 1
     return count
+
+
+def read_pcap(path: Path) -> list[tuple[bytes, float]]:
+    """Read a libpcap file written by ``write_pcap`` back into ``(frame, timestamp)``
+    pairs. Handles either byte order and drops a truncated trailing record."""
+    data = Path(path).read_bytes()
+    if len(data) < 24:
+        return []
+    if struct.unpack("<I", data[:4])[0] == PCAP_MAGIC:
+        endian = "<"
+    elif struct.unpack(">I", data[:4])[0] == PCAP_MAGIC:
+        endian = ">"
+    else:
+        raise ValueError(f"not a libpcap file: bad magic {data[:4].hex()}")
+    records: list[tuple[bytes, float]] = []
+    offset = 24
+    while offset + 16 <= len(data):
+        ts_sec, ts_usec, caplen, _orig = struct.unpack(endian + "IIII", data[offset:offset + 16])
+        offset += 16
+        if offset + caplen > len(data):
+            break
+        records.append((data[offset:offset + caplen], ts_sec + ts_usec / 1_000_000))
+        offset += caplen
+    return records
