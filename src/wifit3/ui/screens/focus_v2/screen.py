@@ -34,6 +34,7 @@ from textual.screen import Screen
 from textual.widgets import Button, Footer, Header, Static
 
 from wifit3.campaigns import treelog
+from wifit3.models.access_point import deauth_protected, eap_only
 from wifit3.campaigns.campaign import Campaign
 from wifit3.campaigns.pmkid import PmkidHarvestAttack
 from wifit3.campaigns.wep import WepCampaign
@@ -49,6 +50,7 @@ from .campaign_controls import CampaignControls
 from .decloak_modal import DecloakInputModal
 from wifit3.campaigns.wps.registrar import PinResult
 from wifit3.crack.handshake import handshake_uncrackable_label
+from wifit3.ui.encryption_format import psk_capture_supported
 from wifit3.models import AccessPoint, IdSource
 from wifit3.persist.config import Config
 from wifit3.ui.vault.global_tracker import GlobalJobTracker
@@ -490,10 +492,14 @@ class FocusViewV2(Screen):
         else:
             self._log(treelog.leaf("[yellow]no interface: passive view only[/yellow]"))
 
-        if ap.pmf_required:
+        protection = deauth_protected(ap)
+        if protection is True:
             self._log("[bold yellow]PMF Required:[/] "
                       "AP requires [bold]Protected Management Frames[/]")
             self._log(treelog.leaf("[italic]Deauth[/] attacks have been disabled"))
+        elif protection is None:
+            self._log("[bold yellow]PMF Invalid:[/] contradictory MFPC/MFPR advertisement")
+            self._log(treelog.leaf("[italic]Deauth[/] disabled because protection is unknown"))
 
         self._log_persisted_history(ap)
 
@@ -504,8 +510,16 @@ class FocusViewV2(Screen):
         enc = (ap.encryption or "").upper()
         if enc == "WEP":
             self._log("[bold italic]Passively listening[/bold italic] for [bold]WEP IVs[/bold]")
-        elif enc not in ("OPEN", "", "WPA3 "):
-            # 'Crackable' because the pipeline filters SAE-only out.
+        elif enc in ("OPEN", ""):
+            pass
+        elif eap_only(ap):
+            self._log("[dim]802.1X Enterprise: no passphrase to capture[/dim]")
+        elif ap.wpa3 and not ap.transition_mode:
+            self._log("[dim]WPA3/SAE: passive capture not applicable[/dim]")
+        elif ap.akm_suites and psk_capture_supported(ap) is False:
+            self._log("[dim]No -m 22000 crack path for this AKM (OWE / SHA-384 PSK): "
+                      "nothing to capture[/dim]")
+        else:
             self._log("[bold italic]Passively listening[/bold italic] for")
             self._log(treelog.branch("Crackable 4-Way [bold]Handshakes[/bold]"))
             self._log(treelog.leaf("Crackable [bold]PMKIDs[/bold]"))

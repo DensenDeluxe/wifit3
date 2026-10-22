@@ -132,6 +132,17 @@ def test_visible_and_ineligible():
     assert EvilTwinCampaign.visible(_target())
     assert EvilTwinCampaign.visible(SimpleNamespace(ssid=None, akm_suites=[2])) is False
     assert EvilTwinCampaign.visible(SimpleNamespace(ssid="x", akm_suites=[])) is False
+    assert EvilTwinCampaign.visible(SimpleNamespace(ssid="Corp", akm_suites=[1])) is False
+    assert EvilTwinCampaign.visible(SimpleNamespace(ssid="Corp", akm_suites=[1, 5, 12])) is False
+    assert EvilTwinCampaign.visible(SimpleNamespace(ssid="Corp", akm_suites=[14])) is False  # FILS
+    assert EvilTwinCampaign.visible(SimpleNamespace(ssid="Corp", akm_suites=[23])) is False  # 802.1X-SHA-384
+    assert EvilTwinCampaign.visible(SimpleNamespace(ssid="Corp", akm_suites=[22])) is False  # FT-802.1X-SHA-384
+    assert EvilTwinCampaign.visible(SimpleNamespace(ssid="Open+", akm_suites=[18])) is False
+    assert EvilTwinCampaign.visible(SimpleNamespace(ssid="Corp", akm_suites=[1, 2])) is True
+    assert EvilTwinCampaign.visible(SimpleNamespace(ssid="Corp", akm_suites=[8])) is True
+    assert EvilTwinCampaign.visible(SimpleNamespace(ssid="Corp", akm_suites=[24])) is True
+    assert EvilTwinCampaign.visible(SimpleNamespace(ssid="Unknown", akm_suites=[31])) is False
+    assert EvilTwinCampaign.visible(SimpleNamespace(ssid="SHA384", akm_suites=[20])) is False
     no_beacon = SimpleNamespace(bssid=_BSSID, ssid=_SSID, channel=11,
                                 last_beacon_frame=None, akm_suites=[2])
     assert EvilTwinCampaign.ineligible_reason(no_beacon) == "no beacon captured yet"
@@ -139,9 +150,12 @@ def test_visible_and_ineligible():
 
 
 def test_default_punt_modes():
-    assert default_punt_modes(SimpleNamespace(pmf_required=True)) == (PuntMode.CSA,)
-    assert default_punt_modes(SimpleNamespace(pmf_required=False)) == (
+    assert default_punt_modes(
+        SimpleNamespace(pmf_required=True, pmf_capable=True)) == (PuntMode.CSA,)
+    assert default_punt_modes(SimpleNamespace(pmf_required=False, pmf_capable=False)) == (
         PuntMode.DEAUTH, PuntMode.CSA, PuntMode.BTM)
+    assert default_punt_modes(SimpleNamespace(pmf_required=True, pmf_capable=False)) == (
+        PuntMode.CSA,)
 
 
 def test_csa_target_channel():
