@@ -13,7 +13,13 @@ from typing import Optional
 from wifit3.dot11 import str_to_mac
 from wifit3.dot11.ap import beacon_clone
 from wifit3.dot11.csa import build_csa_beacon
-from wifit3.crack.handshake import crackable_pairs, pmkid_crackable
+from wifit3.dot11.rsn import SAE_AKM_SUITES
+from wifit3.crack.handshake import (
+    PSK_CAPTURE_AKMS,
+    crackable_pairs,
+    pmkid_crackable,
+)
+from wifit3.models.access_point import deauth_attack_allowed
 from wifit3.campaigns.campaign import Campaign
 from wifit3.campaigns.eviltwin.fake_ap import FakeAP
 from wifit3.campaigns.eviltwin.punter import Punter, PuntMode, BURST_SIZE, FRAME_GAP_SEC
@@ -34,9 +40,8 @@ def csa_target_channel(ap_channel: int, preferred: Optional[int] = None) -> int:
 
 
 def default_punt_modes(ap) -> tuple[PuntMode, ...]:
-    """Techniques checked by default for the target's PMF posture: PMF-Required blocks the
-    robust-frame punts (deauth + BTM), leaving CSA; otherwise all three."""
-    if ap.pmf_required:
+    """Use CSA alone unless the PMF bits establish that robust-frame punts are viable."""
+    if not deauth_attack_allowed(ap):
         return (PuntMode.CSA,)
     return (PuntMode.DEAUTH, PuntMode.CSA, PuntMode.BTM)
 
@@ -64,7 +69,9 @@ class EvilTwinCampaign(Campaign):
 
     @classmethod
     def visible(cls, ap) -> bool:
-        return bool(ap.ssid) and bool(ap.akm_suites)
+        """Show for SSIDs advertising a supported PSK or SAE AKM."""
+        supported = PSK_CAPTURE_AKMS | SAE_AKM_SUITES
+        return bool(ap.ssid) and bool(supported & set(ap.akm_suites))
 
     @classmethod
     def ineligible_reason(cls, ap) -> Optional[str]:

@@ -154,12 +154,21 @@ async def test_silent_ap_retries_then_gives_up_without_deauth():
 
 async def test_pmf_required_short_circuits_without_tx():
     iface = _FakeIface(deliver_m1=False)
-    a = PmkidHarvestAttack(iface, _target(pmf_required=True))
+    a = PmkidHarvestAttack(iface, _target(pmf_required=True, pmf_capable=True))
     await a._loop()
     await a.teardown()
     assert a.pmkid is None
     assert a.fail_reason is PmkidFail.PMF_REQUIRED
     assert iface.sent == []                                    # don't even try: no auth/assoc/deauth
+
+
+async def test_invalid_pmf_without_mfpc_short_circuits_as_unknown():
+    iface = _FakeIface(deliver_m1=False)
+    a = PmkidHarvestAttack(iface, _target(pmf_required=True, pmf_capable=False))
+    await a._loop()
+    await a.teardown()
+    assert a.fail_reason is PmkidFail.PMF_INVALID
+    assert iface.sent == []
 
 
 async def test_no_psk_akm_short_circuits():
