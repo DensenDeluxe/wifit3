@@ -191,11 +191,11 @@ def _keystone_akm(hs):
 
 
 def _verdict(hs):
-    return wpa.eapol_verdict(_keystone_akm(hs), hs.akm_offered, hs.vendor_akm_offered)
+    return wpa.eapol_verdict(_keystone_akm(hs), hs)
 
 
 def _label(hs):
-    return wpa.uncrackable_label(_keystone_akm(hs), hs.akm_offered, hs.vendor_akm_offered)
+    return wpa.uncrackable_label(_keystone_akm(hs), hs)
 
 
 # --- EAPOL gate: suppress SAE, FT-PSK only as a complete WPA*04 ----------------
@@ -377,7 +377,7 @@ def test_withheld_capture_label_needs_a_usable_pairing():
     so the log line means 'you got a handshake but it's worthless', not noise."""
     m1_only = _hs(_frame(1, 5, nonce=ANONCE, mic=False))
     m1_only.akm_offered = [1]
-    assert wpa.uncrackable_label(None, m1_only.akm_offered, False) == "EAP/Enterprise"   # AKM says EAP
+    assert wpa.uncrackable_label(None, m1_only) == "EAP/Enterprise"   # AKM says EAP
     assert wpa.withheld_capture_label(m1_only) is None          # but no usable pair
 
 
@@ -429,7 +429,7 @@ def test_owe_needs_a_usable_pairing():
     """Like EAP: the OWE badge fires only on a real captured 4-way, not a stray M1."""
     m1_only = _hs(_frame(1, 5, nonce=ANONCE, mic=False))
     m1_only.akm_offered = [18]
-    assert wpa.uncrackable_label(None, m1_only.akm_offered, False) == "OWE"
+    assert wpa.uncrackable_label(None, m1_only) == "OWE"
     assert wpa.withheld_capture_label(m1_only) is None
 
 
@@ -518,9 +518,9 @@ def test_reserved_akm_is_not_crackable_and_never_misnamed_sae():
 
 
 def test_reserved_akm_unknown_selection_offer_is_withheld():
-    assert wpa.eapol_verdict(None, [42], False) == "uncrackable"
+    assert _verdict(_m1m2(offered=[42])) == "uncrackable"
     assert wpa.crackable_pairs(_m1m2(offered=[42])) == []
-    assert wpa.eapol_verdict(None, [2, 42], False) == "unknown"
+    assert _verdict(_m1m2(offered=[2, 42])) == "unknown"
     assert wpa.crackable_pairs(_m1m2(offered=[2, 42])) == []
     assert hc.eapol_hashlines("Net", _m1m2(offered=[2, 42])) == []
 
@@ -566,3 +566,13 @@ def test_pmkid_mixed_offer_crackable_with_a_proven_psk_selection():
 def test_pmkid_legacy_fallback_with_no_akm_evidence_is_preserved():
     assert wpa.crackable_pmkid_akm(_hs_pmkid(offered=[])) == 2
     assert wpa.crackable_pmkid_akm(_hs_pmkid(offered=[], m1_key_descriptor_version=3)) == 6
+
+
+def test_rsn_ie_without_a_standard_akm_is_withheld():
+    eapol = _m1m2(offered=[])
+    eapol.rsn_ie_seen = True
+    assert _verdict(eapol) == "uncrackable"
+    assert wpa.crackable_pairs(eapol) == []
+    pmkid = _hs_pmkid(offered=[], m1_key_descriptor_version=2)
+    pmkid.rsn_ie_seen = True
+    assert wpa.crackable_pmkid_akm(pmkid) is None

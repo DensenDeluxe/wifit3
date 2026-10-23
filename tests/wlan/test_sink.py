@@ -676,6 +676,6 @@ def test_vendor_akm_reaches_handshake_crack_gate():
             "eapol_nonce": nonce, "eapol_mic": mic, "eapol_payload": bytes(99),
         }), W0)
     hs = s.access_points[BSSID].handshakes[client]
-    assert hs.vendor_akm_offered is True
+    assert hs.vendor_akm_offered is True and hs.rsn_ie_seen is True
     assert wpa.crackable_pairs(hs) == []
     assert wpa.withheld_capture_label(hs) == "Unsupported AKM"

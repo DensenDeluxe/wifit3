@@ -271,6 +271,8 @@ class WlanSink:
                         hs.akm_offered = list(ap.akm_suites)
                     if ap.vendor_akm_offered:
                         hs.vendor_akm_offered = True
+                    if ap.rsn_ie is not None:
+                        hs.rsn_ie_seen = True
         return True
 
     def _on_wepdata_frame(self, pkt: Packet) -> bool:
@@ -360,12 +362,14 @@ class WlanSink:
                 beacon_frame=ap.last_beacon_frame,
                 akm_offered=list(ap.akm_suites),
                 vendor_akm_offered=ap.vendor_akm_offered,
+                rsn_ie_seen=ap.rsn_ie is not None,
             )
             ap.handshakes[client_mac] = hs
-        elif ap.akm_suites or ap.vendor_akm_offered:
+        elif ap.rsn_ie is not None:
             # Refresh in case the handshake was created before the AP's RSN IE was known.
             hs.akm_offered = list(ap.akm_suites)
             hs.vendor_akm_offered = ap.vendor_akm_offered
+            hs.rsn_ie_seen = True
 
         # AKM this association negotiated, snapshotted now: this frame's own RSN IE
         # (M2/M3), else the client's assoc-time selection.
