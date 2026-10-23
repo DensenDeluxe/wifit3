@@ -280,18 +280,15 @@ def status_headlines(ap: AccessPoint, array: WlanArray, vault: Vault) -> list[st
     enc = (ap.encryption or "").upper()
     wep = enc == "WEP"
 
-    # 802.1X/Enterprise (incl. FILS): the 4-way is keyed per session; checked before any stale PSK
+    # 802.1X/Enterprise (incl. FILS): login attacks not yet supported; checked before any stale PSK
     # or old 4-way left from a previous (PSK) config can surface a misleading headline.
     if eap_only(ap):
         if ap.wpa3 and ap.transition_mode:
-            return ["[dim]● WPA3/Enterprise transition: 4-way not crackable (per-session key)[/dim]",
-                    "[dim]  user credentials: not yet supported[/dim]"]
+            return ["[dim]● WPA3/Enterprise transition: not yet supported[/dim]"]
         if ap.wpa3:
-            return ["[dim]● WPA3/Enterprise: 4-way not crackable (per-session key)[/dim]",
-                    "[dim]  user credentials: not yet supported[/dim]"]
+            return ["[dim]● WPA3/Enterprise: not yet supported[/dim]"]
         wpa_label = "WPA2" if ap.rsn_valid else "WPA"
-        return [f"[dim]● {wpa_label}/Enterprise: 4-way not crackable (per-session key)[/dim]",
-                "[dim]  user credentials: not yet supported[/dim]"]
+        return [f"[dim]● {wpa_label}/Enterprise: not yet supported[/dim]"]
 
     if no_passphrase(ap):
         return ["[dim]● OWE (Enhanced Open): Diffie-Hellman key, nothing to crack[/dim]"]

@@ -513,8 +513,7 @@ class FocusViewV2(Screen):
         elif enc in ("OPEN", ""):
             pass
         elif eap_only(ap):
-            self._log("[dim]802.1X Enterprise: 4-way not crackable (per-session key); "
-                      "user credentials not yet supported[/dim]")
+            self._log("[dim]802.1X Enterprise: not yet supported[/dim]")
         elif ap.wpa3 and not ap.transition_mode:
             self._log("[dim]WPA3/SAE: passive capture not applicable[/dim]")
         elif no_passphrase(ap):
