@@ -280,17 +280,20 @@ def status_headlines(ap: AccessPoint, array: WlanArray, vault: Vault) -> list[st
     enc = (ap.encryption or "").upper()
     wep = enc == "WEP"
 
-    # 802.1X/Enterprise (incl. FILS): no passphrase to capture, checked before any stale PSK
+    # 802.1X/Enterprise (incl. FILS): the 4-way is keyed per session; checked before any stale PSK
     # or old 4-way left from a previous (PSK) config can surface a misleading headline.
     if eap_only(ap):
         if ap.wpa3 and ap.transition_mode:
-            return ["[dim]● WPA3/Enterprise transition: passive capture not applicable[/dim]"]
+            return ["[dim]● WPA3/Enterprise transition: 4-way not crackable (per-session key)[/dim]",
+                    "[dim]  user credentials: not yet supported[/dim]"]
         if ap.wpa3:
-            return ["[dim]● WPA3/Enterprise: passive capture not applicable[/dim]"]
-        return ["[dim]● WPA2/Enterprise: passive capture not applicable[/dim]"]
+            return ["[dim]● WPA3/Enterprise: 4-way not crackable (per-session key)[/dim]",
+                    "[dim]  user credentials: not yet supported[/dim]"]
+        return ["[dim]● WPA2/Enterprise: 4-way not crackable (per-session key)[/dim]",
+                "[dim]  user credentials: not yet supported[/dim]"]
 
     if no_passphrase(ap):
-        return ["[dim]● OWE (Enhanced Open): no passphrase to capture[/dim]"]
+        return ["[dim]● OWE (Enhanced Open): Diffie-Hellman key, nothing to crack[/dim]"]
 
     unsupported = bool(ap.akm_suites) and psk_capture_supported(ap) is False
 
@@ -303,7 +306,7 @@ def status_headlines(ap: AccessPoint, array: WlanArray, vault: Vault) -> list[st
                 "[dim]● Listening for WEP IVs[/dim]"]
     psk = vault.known_psk(ap)
     if psk:
-        tail = ("[dim]● No crackable capture: this AKM has no -m 22000 path[/dim]"
+        tail = ("[dim]● Not yet supported: no crack path for this AKM[/dim]"
                 if unsupported else "[dim]● Listening for handshake + PMKID[/dim]")
         return [f"[black bold on green] ✓ PSK: {escape(psk)} [/black bold on green]", tail]
 
@@ -324,7 +327,7 @@ def status_headlines(ap: AccessPoint, array: WlanArray, vault: Vault) -> list[st
         return ["[dim]● WPA3/SAE: passive capture not applicable[/dim]"]
 
     if unsupported:
-        return ["[dim]● No crackable capture: this AKM has no -m 22000 path[/dim]"]
+        return ["[dim]● Not yet supported: no crack path for this AKM[/dim]"]
 
     n_complete, n_partial, msg_counts = count_handshakes(ap)
     n_pmkid = sum(1 for hs in ap.handshakes.values() if hs.pmkid and pmkid_crackable(hs))

@@ -35,7 +35,7 @@ from textual.widgets import Button, Footer, Header, Static
 
 from wifit3.campaigns import treelog
 from wifit3.dot11.pmf import PmfPosture
-from wifit3.models.access_point import eap_only
+from wifit3.models.access_point import eap_only, no_passphrase
 from wifit3.campaigns.campaign import Campaign
 from wifit3.campaigns.pmkid import PmkidHarvestAttack
 from wifit3.campaigns.wep import WepCampaign
@@ -513,12 +513,14 @@ class FocusViewV2(Screen):
         elif enc in ("OPEN", ""):
             pass
         elif eap_only(ap):
-            self._log("[dim]802.1X Enterprise: no passphrase to capture[/dim]")
+            self._log("[dim]802.1X Enterprise: 4-way not crackable (per-session key); "
+                      "user credentials not yet supported[/dim]")
         elif ap.wpa3 and not ap.transition_mode:
             self._log("[dim]WPA3/SAE: passive capture not applicable[/dim]")
+        elif no_passphrase(ap):
+            self._log("[dim]OWE (Enhanced Open): Diffie-Hellman key, nothing to crack[/dim]")
         elif ap.akm_suites and psk_capture_supported(ap) is False:
-            self._log("[dim]No -m 22000 crack path for this AKM (OWE / SHA-384 PSK): "
-                      "nothing to capture[/dim]")
+            self._log("[dim]Not yet supported: no crack path for this AKM[/dim]")
         else:
             self._log("[bold italic]Passively listening[/bold italic] for")
             self._log(treelog.branch("Crackable 4-Way [bold]Handshakes[/bold]"))

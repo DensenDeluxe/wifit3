@@ -138,12 +138,12 @@ def test_visible_and_ineligible():
         ap = _target(akm_suites=akm_suites)
         assert EvilTwinCampaign.visible(ap) is True
         assert (EvilTwinCampaign.ineligible_reason(ap)
-                == "No PSK or SAE AKM: no passphrase to capture")
+                == "Needs a PSK or SAE network")
     for akm_suites in ((1, 2), (8,), (24,)):
         assert EvilTwinCampaign.ineligible_reason(_target(akm_suites=akm_suites)) is None
     assert EvilTwinCampaign.ineligible_reason(_target(beacon=None)) == "no beacon captured yet"
     assert (EvilTwinCampaign.ineligible_reason(_target(akm_suites=(1,), beacon=None))
-            == "No PSK or SAE AKM: no passphrase to capture")
+            == "Needs a PSK or SAE network")
 
 
 def test_default_punt_modes():

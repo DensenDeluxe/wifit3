@@ -75,7 +75,7 @@ class EvilTwinCampaign(Campaign):
     @classmethod
     def ineligible_reason(cls, ap: AccessPoint) -> Optional[str]:
         if not (PSK_CAPTURE_AKMS | SAE_AKM_SUITES) & set(ap.akm_suites):
-            return "No PSK or SAE AKM: no passphrase to capture"
+            return "Needs a PSK or SAE network"
         if not ap.last_beacon_frame:
             return "no beacon captured yet"
         return None

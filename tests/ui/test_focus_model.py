@@ -167,7 +167,7 @@ def test_headline_names_wpa3_sae_before_generic_unsupported_state():
     )
     headline = " ".join(_headline(ap))
     assert "WPA3/SAE" in headline
-    assert "No crackable capture" not in headline
+    assert "Not yet supported" not in headline
 
 
 def test_headline_wpa2_enterprise_does_not_promise_a_psk_capture():
@@ -276,14 +276,14 @@ def test_headline_listening_when_no_psk():
 def test_headline_owe_is_not_a_crackable_capture():
     joined = " ".join(_headline(build_ap(encryption="OWE", akms=["OWE"], akm_suites=[18])))
     assert "Listening for handshake" not in joined
-    assert "no passphrase" in joined
+    assert "nothing to crack" in joined
 
 
 @pytest.mark.parametrize("suites", [[20], [19]])
 def test_headline_sha384_psk_is_not_a_crackable_capture(suites):
     joined = " ".join(_headline(build_ap(encryption="WPA2", akms=["PSK-SHA384"], akm_suites=suites)))
     assert "Listening for handshake" not in joined
-    assert "No crackable capture" in joined
+    assert "Not yet supported" in joined
 
 
 def test_headline_unsupported_akm_partial_handshake_is_not_capturing():
@@ -298,7 +298,7 @@ def test_headline_unsupported_akm_partial_handshake_is_not_capturing():
     ap.handshakes = {"11:22:33:44:55:66": hs}
     joined = " ".join(_headline(ap))
     assert "Capturing handshake" not in joined and "deauth" not in joined.lower()
-    assert "No crackable capture" in joined
+    assert "Not yet supported" in joined
 
 
 def test_headline_unsupported_akm_with_saved_psk_shows_psk_without_listening():
@@ -313,7 +313,7 @@ def test_headline_unsupported_akm_with_saved_psk_shows_psk_without_listening():
     joined = " ".join(fm.status_headlines(ap, None, _VaultWithPSK()))
     assert "PSK: sha384-pass" in joined
     assert "Listening for handshake" not in joined
-    assert "No crackable capture" in joined
+    assert "Not yet supported" in joined
 
 
 def test_headline_live_pbc_outranks_listening():
@@ -730,7 +730,7 @@ async def test_buttons_enterprise_hides_psk_attacks(buttons_screen):
     assert b["btn-pmkid"].display is False
     assert b["btn-deauth"].display is False
     assert b["btn-eviltwin"].display is True and b["btn-eviltwin"].disabled is True
-    assert b["btn-eviltwin"].tooltip == "No PSK or SAE AKM: no passphrase to capture"
+    assert b["btn-eviltwin"].tooltip == "Needs a PSK or SAE network"
 
 
 @pytest.mark.asyncio(loop_scope="module")
