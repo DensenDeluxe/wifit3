@@ -662,7 +662,7 @@ def test_vendor_akm_reaches_handshake_crack_gate():
     s = WlanSink()
     client = "12:22:33:44:55:66"
     s.update(_beacon({
-        "akms": ["AKM-00112299"], "vendor_akm_offered": True,
+        "akms": ["Vendor"], "vendor_akm_offered": True,
         "rsn_valid": True, "rsn_ie_raw": b"\x30\x02\x01\x00", "raw": bytes(36),
     }), W0)
     for msg_num, source, dest, nonce, mic, raw in (

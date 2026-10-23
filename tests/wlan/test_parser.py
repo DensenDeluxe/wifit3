@@ -490,9 +490,15 @@ def test_vendor_akm_is_preserved_and_blocks_wpa3_enterprise_classification():
     rsn = _rsn_ie(akms=(0x05, bytes.fromhex("00112299")), rsn_caps=0x00C0)
     parsed = WlanFrameParser.parse_80211_frame(_build_beacon(rsn_ie=rsn), -50)
     assert parsed.akm_suites == [0x05]
-    assert parsed.akms == ["EAP-SHA256", "AKM-00112299"]
+    assert parsed.akms == ["EAP-SHA256", "Vendor"]
     assert parsed.wpa3 is False
     assert parsed.vendor_akm_offered is True
+
+
+def test_dpp_akm_is_named_dpp():
+    rsn = _rsn_ie(akms=(0x02, bytes.fromhex("506f9a02")))
+    parsed = WlanFrameParser.parse_80211_frame(_build_beacon(rsn_ie=rsn), -50)
+    assert parsed.akms == ["PSK", "DPP"]
 
 
 def test_rsn_version_other_than_one_is_rejected():

@@ -59,6 +59,7 @@ from wifit3.dot11.rsn import (
     AKM_PSK_SHA384,
     AKM_SAE,
     AKM_SAE_EXT_KEY,
+    AKM_SELECTOR_DPP,
     CIPHER_AES_128_CMAC,
     CIPHER_BIP_GMAC_256,
     CIPHER_CCMP,
@@ -766,6 +767,9 @@ class WlanFrameParser:
         AKM_SAE_EXT_KEY: "SAE-EXT-KEY",      # WPA3 H2E (group-dependent hash)
         AKM_FT_SAE_EXT_KEY: "FT-SAE-EXT-KEY",
     }
+    _VENDOR_AKM_NAMES = {
+        AKM_SELECTOR_DPP: "DPP",
+    }
 
     _WPA3_DATA_CIPHERS = frozenset({CIPHER_CCMP, CIPHER_GCMP, CIPHER_GCMP_256, CIPHER_CCMP_256})
     # TODO: FT-PSK family (suites 4 & 19) is "crackable" but the FT key hierarchy
@@ -828,14 +832,14 @@ class WlanFrameParser:
                 p += 4
                 if len(suite) != 4:
                     continue
-                name = f"AKM-{suite.hex()}"
                 if suite[:3] == RSN_OUI:
                     sid = suite[3]
                     if sid not in akm_suites:
                         akm_suites.append(sid)   # raw 00-0F-AC:N, drives crackability
-                    name = cls._AKM_NAMES.get(sid, name)
+                    name = cls._AKM_NAMES.get(sid, f"AKM-{suite.hex()}")
                 else:
                     vendor_akm_offered = True
+                    name = cls._VENDOR_AKM_NAMES.get(bytes(suite), "Vendor")
                 if name not in akms:
                     akms.append(name)
             pmf_capable = False
