@@ -168,24 +168,18 @@ def test_describe_flags():
 
 # ----- AKM crackability gating (SAE / FT / SHA256-PMKID) ---------------------
 
-def _m1m2(*, offered, client=None, selectors=(), rsn_evidence=False):
+def _m1m2(*, offered, client=None):
     """A structurally perfect M1+M2 (always a crackable pair if the AKM allows),
     tagged with the AP's offered AKM suites and the client's chosen one (on the M2)."""
     hs = _hs(_frame(1, 5, nonce=ANONCE, mic=False), _frame(2, 5, nonce=SNONCE, akm=client))
     hs.akm_offered = list(offered)
-    hs.akm_selectors = list(selectors)
-    hs.rsn_evidence = rsn_evidence
     return hs
 
 
-def _hs_pmkid(
-    *, offered, client=None, m1_key_descriptor_version=None, selectors=(), rsn_evidence=False,
-):
+def _hs_pmkid(*, offered, client=None, m1_key_descriptor_version=None):
     hs = Handshake(bssid="aa:bb:cc:dd:ee:ff", client_mac="11:22:33:44:55:66",
                    beacon_frame=b"B", pmkid=b"\x01" * 16, pmkid_akm=client)
     hs.akm_offered = list(offered)
-    hs.akm_selectors = list(selectors)
-    hs.rsn_evidence = rsn_evidence
     hs.pmkid_key_descriptor_version = m1_key_descriptor_version
     return hs
 
@@ -195,21 +189,11 @@ def _keystone_akm(hs):
 
 
 def _verdict(hs):
-    return wpa.eapol_verdict(
-        _keystone_akm(hs),
-        hs.akm_offered,
-        offered_selectors=hs.akm_selectors,
-        rsn_evidence=hs.rsn_evidence,
-    )
+    return wpa.eapol_verdict(_keystone_akm(hs), hs.akm_offered)
 
 
 def _label(hs):
-    return wpa.uncrackable_label(
-        _keystone_akm(hs),
-        hs.akm_offered,
-        offered_selectors=hs.akm_selectors,
-        rsn_evidence=hs.rsn_evidence,
-    )
+    return wpa.uncrackable_label(_keystone_akm(hs), hs.akm_offered)
 
 
 # --- EAPOL gate: suppress SAE, FT-PSK only as a complete WPA*04 ----------------
@@ -357,7 +341,7 @@ def test_eap_only_ap_suppresses_handshake():
 
 
 def test_eap_variants_all_suppressed():
-    """FT-EAP (3), EAP-SHA256 (5), EAP-Suite-B[-192] (11/12), FT-EAP-SHA384 (13)."""
+    """FT-EAP (3), EAP-SHA256 (5), EAP-Suite-B[-192] (11/12), FT-EAP-Suite-B-192 (13)."""
     for suite in (3, 5, 11, 12, 13):
         assert wpa.crackable_pairs(_m1m2(offered=[suite])) == [], suite
 
@@ -539,22 +523,6 @@ def test_reserved_akm_unknown_selection_offer_is_withheld():
     assert hc.eapol_hashlines("Net", _m1m2(offered=[2, 42])) == []
 
 
-def test_vendor_akm_only_is_not_legacy_psk_fallback():
-    hs = _m1m2(offered=[], selectors=[0x00112299], rsn_evidence=True)
-    assert _verdict(hs) == "uncrackable"
-    assert wpa.crackable_pairs(hs) == []
-    assert wpa.withheld_capture_label(hs) == "Unsupported AKM"
-
-
-def test_vendor_akm_mixed_with_psk_needs_a_proven_selection():
-    selectors = [0x000FAC02, 0x00112299]
-    unknown = _m1m2(offered=[2], selectors=selectors, rsn_evidence=True)
-    selected = _m1m2(offered=[2], client=2, selectors=selectors, rsn_evidence=True)
-    assert _verdict(unknown) == "unknown"
-    assert wpa.crackable_pairs(unknown) == []
-    assert len(wpa.crackable_pairs(selected)) == 1
-
-
 def test_mixed_eap_psk_crackable_only_with_a_proven_psk_selection():
     assert len(wpa.crackable_pairs(_m1m2(offered=[1, 2], client=2))) == 1
     assert wpa.crackable_pairs(_m1m2(offered=[1, 2], client=None)) == []
@@ -567,21 +535,6 @@ def test_pmkid_mixed_enterprise_psk_offer_withheld_without_selection():
     assert hc.pmkid_hashline("Net", hs) is None
     for off in ([2, 42], [42], [2, 8], [2, 4]):
         assert wpa.crackable_pmkid_akm(_hs_pmkid(offered=off, m1_key_descriptor_version=2)) is None, off
-
-
-def test_vendor_akm_pmkid_fallback_is_withheld():
-    for offered, selectors in (
-        ([], [0x00112299]),
-        ([2], [0x000FAC02, 0x00112299]),
-    ):
-        hs = _hs_pmkid(
-            offered=offered,
-            selectors=selectors,
-            rsn_evidence=True,
-            m1_key_descriptor_version=2,
-        )
-        assert wpa.crackable_pmkid_akm(hs) is None
-        assert hc.pmkid_hashline("Net", hs) is None
 
 
 def test_pmkid_mixed_offer_crackable_with_a_proven_psk_selection():
