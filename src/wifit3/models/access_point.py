@@ -155,9 +155,11 @@ class AccessPoint:
 
 def eap_only(ap: AccessPoint) -> bool:
     """True when every advertised AKM is 802.1X/EAP or FILS (no PSK, no SAE)."""
-    return bool(ap.akm_suites) and set(ap.akm_suites) <= ENTERPRISE_AKM_SUITES
+    return (bool(ap.akm_suites) and not ap.vendor_akm_offered
+            and set(ap.akm_suites) <= ENTERPRISE_AKM_SUITES)
 
 
 def no_passphrase(ap: AccessPoint) -> bool:
     """True when every advertised AKM is 802.1X/EAP, FILS or OWE."""
-    return bool(ap.akm_suites) and set(ap.akm_suites) <= _NO_PASSPHRASE_AKM_SUITES
+    return (bool(ap.akm_suites) and not ap.vendor_akm_offered
+            and set(ap.akm_suites) <= _NO_PASSPHRASE_AKM_SUITES)
