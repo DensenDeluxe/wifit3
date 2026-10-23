@@ -239,7 +239,7 @@ def status_under_dash(ap: AccessPoint, array: WlanArray, now: float) -> list[str
         return wep_status_lines(ap, array, None, now)
     lines = [f"[dim]Encryption:[/dim] {format_encryption_markup(ap, detailed=True)}"]
     parts = []
-    if ap.akms or ap.wpa3:              # RSN (WPA2/3): PMF is meaningful
+    if (ap.akms and ap.rsn_valid) or ap.wpa3:   # RSN (WPA2/3): PMF is meaningful
         parts.append(f"[dim]PMF:[/dim] {pmf_status_markup(ap)}")
     if getattr(ap, "wps", None):
         lock = "[red]🔒[/red]" if ap.wps_locked else "[green]🔓[/green]"
@@ -289,7 +289,8 @@ def status_headlines(ap: AccessPoint, array: WlanArray, vault: Vault) -> list[st
         if ap.wpa3:
             return ["[dim]● WPA3/Enterprise: 4-way not crackable (per-session key)[/dim]",
                     "[dim]  user credentials: not yet supported[/dim]"]
-        return ["[dim]● WPA2/Enterprise: 4-way not crackable (per-session key)[/dim]",
+        wpa_label = "WPA2" if ap.rsn_valid else "WPA"
+        return [f"[dim]● {wpa_label}/Enterprise: 4-way not crackable (per-session key)[/dim]",
                 "[dim]  user credentials: not yet supported[/dim]"]
 
     if no_passphrase(ap):

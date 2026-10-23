@@ -6,6 +6,8 @@ registry. These are the picture assertions that used to live on WlanInterface, r
 
 import struct
 
+import pytest
+
 from wifit3.dot11.mac import str_to_mac
 from wifit3.dot11.wsc import messages as WSC
 from wifit3.models import IdKey, IdSource
@@ -679,3 +681,32 @@ def test_vendor_akm_reaches_handshake_crack_gate():
     assert hs.vendor_akm_offered is True and hs.rsn_ie_seen is True
     assert wpa.crackable_pairs(hs) == []
     assert wpa.withheld_capture_label(hs) == "Unsupported AKM"
+
+
+@pytest.mark.parametrize("encryption, akm_name, akm, verdict, label", [
+    ("WPA-EAP-TKIP", "EAP", 1, "uncrackable", "EAP/Enterprise"),
+    ("WPA-PSK-TKIP", "PSK", 2, "crackable", None),
+])
+def test_wpa1_akm_reaches_handshake_crack_gate(encryption, akm_name, akm, verdict, label):
+    from wifit3.crack import handshake as wpa
+
+    s = WlanSink()
+    client = "12:22:33:44:55:66"
+    s.update(_beacon({
+        "encryption": encryption, "akms": [akm_name], "akm_suites": [akm],
+        "rsn_valid": False, "raw": bytes(36),
+    }), W0)
+    for msg_num, source, dest, nonce, mic, raw in (
+        (1, BSSID, client, bytes.fromhex("01" * 32), bytes(16), bytes(100)),
+        (2, client, BSSID, bytes.fromhex("02" * 32), bytes.fromhex("03" * 16), bytes([1]) * 100),
+    ):
+        s.update(pkt({
+            "type": "eapol", "bssid": BSSID, "source": source, "dest": dest,
+            "rssi": -45, "raw": raw, "eapol_msg_num": msg_num,
+            "eapol_replay_counter": bytes.fromhex("00" * 7 + "05"),
+            "eapol_nonce": nonce, "eapol_mic": mic, "eapol_payload": bytes(99),
+        }), W0)
+    hs = s.access_points[BSSID].handshakes[client]
+    assert hs.akm_offered == [akm] and hs.rsn_ie_seen is False
+    assert wpa.eapol_verdict(None, hs) == verdict
+    assert wpa.uncrackable_label(None, hs) == label

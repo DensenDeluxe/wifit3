@@ -70,10 +70,10 @@ class PmkidHarvestAttack(Campaign):
 
     @classmethod
     def visible(cls, ap) -> bool:
-        """Shown when the AP advertises a harvestable (PSK) AKM, OR when its
-        encryption isn't confirmed yet."""
+        """Shown when the AP's RSN element advertises a harvestable (PSK) AKM, OR when its
+        encryption isn't confirmed yet. Hidden for WPA1: the PMKID is an RSN KDE."""
         akms = set(getattr(ap, "akm_suites", None) or ())
-        if set(_HARVESTABLE_AKMS) & akms:
+        if set(_HARVESTABLE_AKMS) & akms and ap.rsn_valid:
             return True   # confirmed harvestable PSK
         if akms:
             return False  # confirmed AKM(s), none harvestable

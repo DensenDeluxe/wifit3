@@ -91,7 +91,7 @@ class _FakeArray:
 def _target(ssid: str | None = _SSID, akm_suites: tuple[int, ...] = (2,),
             beacon: bytes | None = _BEACON) -> AccessPoint:
     return AccessPoint(bssid=_BSSID, ssid=ssid, channel=11,
-                       last_beacon_frame=beacon, akm_suites=list(akm_suites))
+                       last_beacon_frame=beacon, akm_suites=list(akm_suites), rsn_valid=True)
 
 
 def _input(twin, punt, modes=(PuntMode.DEAUTH, PuntMode.CSA), period=0.5, bssid=_BSSID):

@@ -74,7 +74,9 @@ from wifit3.dot11.rsn import (
     PSK_AKM_SUITES,
     RSN_OUI,
     SAE_AKM_SUITES,
+    WPA_OUI,
     RsnElement,
+    WpaElement,
 )
 
 
@@ -622,6 +624,7 @@ class WlanFrameParser:
         akm_suites: List[int] = []
         vendor_akm_offered = False
         rsn_element: Optional[RsnElement] = None
+        wpa_element: Optional[WpaElement] = None
         channel_ds: Optional[int] = None
         channel_ht: Optional[int] = None
         channel_vht: Optional[int] = None
@@ -684,15 +687,24 @@ class WlanFrameParser:
                 if len(tag_data) >= 4:
                     oui = tag_data[:3]
                     oui_type = tag_data[3]
-                    if oui == b'\x00\x50\xf2':
+                    if oui == WPA_OUI:
                         if oui_type == 1: # WPA
                             has_wpa = True
+                            if wpa_element is None:
+                                wpa_element = cls._parse_wpa_ie(tag_data)
                         elif oui_type == 4: # WPS
                             # tag_data = OUI(3) + type(1) + WPS TLVs.
                             wps_payloads.append(tag_data[4:])
 
         if wps_payloads:
             parsed.update(cls._parse_wps_ie(b"".join(wps_payloads)))
+
+        if rsn_element is None and wpa_element is not None:
+            has_rsn = False
+            pairwise_cipher = wpa_element.pairwise_cipher
+            akms = list(wpa_element.akms)
+            akm_suites = list(wpa_element.akm_suites)
+            vendor_akm_offered = wpa_element.vendor_akm_offered
 
         if rsn_element is not None:
             wpa3_enterprise, enterprise_transition = cls._classify_wpa3_enterprise(
@@ -772,6 +784,8 @@ class WlanFrameParser:
         AKM_SELECTOR_OSEN: "OSEN",
         AKM_SELECTOR_DPP: "DPP",
     }
+
+    _WPA_AKM_SUITES = {1: AKM_802_1X, 2: AKM_PSK}   # 00-50-F2:N -> 00-0F-AC:N
 
     _WPA3_DATA_CIPHERS = frozenset({CIPHER_CCMP, CIPHER_GCMP, CIPHER_GCMP_256, CIPHER_CCMP_256})
     # TODO: FT-PSK family (suites 4 & 19) is "crackable" but the FT key hierarchy
@@ -880,6 +894,51 @@ class WlanFrameParser:
             return None
 
     @classmethod
+    def _parse_wpa_ie(cls, tag_data: bytes) -> Optional[WpaElement]:
+        """Parse a WPA vendor IE body (from its 00-50-F2 OUI and type 1 through the AKM list),
+        or None if malformed or truncated."""
+        n = len(tag_data)
+        # OUI + type (4) + version (2) + group cipher (4) + pairwise count (2) = 12.
+        if n < 12 or int.from_bytes(tag_data[4:6], "little") != 1:
+            return None
+        pairwise_count = int.from_bytes(tag_data[10:12], "little")
+        p = 12
+        if p + 4 * pairwise_count + 2 > n:
+            return None
+        pairwise: Optional[str] = None
+        for _ in range(pairwise_count):
+            suite = tag_data[p:p + 4]
+            if pairwise is None and suite[:3] == WPA_OUI:
+                pairwise = cls._CIPHER_NAMES.get(suite[3])
+            p += 4
+        akm_count = int.from_bytes(tag_data[p:p + 2], "little")
+        p += 2
+        if p + 4 * akm_count > n:
+            return None
+        akms: List[str] = []
+        akm_suites: List[int] = []
+        vendor_akm_offered = False
+        for _ in range(akm_count):
+            suite = tag_data[p:p + 4]
+            p += 4
+            akm = cls._WPA_AKM_SUITES.get(suite[3]) if suite[:3] == WPA_OUI else None
+            if akm is None:
+                vendor_akm_offered = True
+                name = "Vendor"
+            else:
+                name = cls._AKM_NAMES[akm]
+                if akm not in akm_suites:
+                    akm_suites.append(akm)
+            if name not in akms:
+                akms.append(name)
+        return WpaElement(
+            pairwise_cipher=pairwise,
+            akms=tuple(akms),
+            akm_suites=tuple(akm_suites),
+            vendor_akm_offered=vendor_akm_offered,
+        )
+
+    @classmethod
     def _classify_wpa3_enterprise(cls, rsn: RsnElement, has_wpa: bool) -> tuple[bool, bool]:
         if has_wpa or not rsn.pmf_capable or not cls._enterprise_akms_only(rsn):
             return False, False
@@ -943,7 +1002,7 @@ class WlanFrameParser:
             "WPA3-SAE-CCMP"
             "WPA2/WPA3-PSK+SAE-CCMP"   (transition mode)
             "WPA2-EAP-CCMP"
-            "WPA-PSK"                  (legacy WPA1 vendor IE only)
+            "WPA-EAP-TKIP"             (legacy WPA1 vendor IE only)
             "OPEN" / "WEP"
         """
         if has_rsn:
@@ -990,8 +1049,12 @@ class WlanFrameParser:
             return "-".join(parts)
 
         if has_wpa:
-            # Legacy WPA1 vendor IE: TKIP is the universal assumption.
-            return "WPA-PSK-TKIP"
+            if not akms:
+                return "WPA-PSK-TKIP"   # malformed WPA1 vendor IE
+            parts = ["WPA", "+".join(akms)]
+            if pairwise_cipher:
+                parts.append(pairwise_cipher)
+            return "-".join(parts)
 
         if len(frame) >= 36:
             cap_info = int.from_bytes(frame[34:36], byteorder='little')

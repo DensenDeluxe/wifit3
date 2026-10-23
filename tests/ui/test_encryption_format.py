@@ -30,6 +30,17 @@ def test_wep_detailed_omits_iv_count():
     )
 
 
+def test_wpa1_renders_its_parsed_akm_and_cipher():
+    ap = _ap(encryption="WPA-EAP-TKIP", akms=["EAP"], akm_suites=[1], pairwise_cipher="TKIP")
+    assert format_encryption_markup(ap, detailed=True) == "[red]WPA[/red] [dim](EAP·TKIP)[/dim]"
+    assert format_encryption_markup(ap) == "[red]WPA[/red] [dim](EAP)[/dim]"
+
+
+def test_wpa1_without_parsed_akms_keeps_the_psk_tkip_default():
+    ap = _ap(encryption="WPA-PSK-TKIP")
+    assert format_encryption_markup(ap, detailed=True) == "[red]WPA[/red] [dim](PSK·TKIP)[/dim]"
+
+
 # ---- AKM-variant visibility in the ENCRYPT detail --------------------------
 
 def test_plain_psk_token_unchanged():

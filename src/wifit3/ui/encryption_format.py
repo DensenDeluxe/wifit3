@@ -55,15 +55,15 @@ class EncryptionType(Enum):
             return cls.WPA3
         if "OWE" in ap.akms:
             return cls.OWE
+        enc = (ap.encryption or "").upper()
+        if enc == "WPA" or enc.startswith("WPA-"):
+            return cls.WPA1
         if ap.akms:
             return cls.WPA2
-        enc = (ap.encryption or "").upper()
         if enc in ("", "OPEN", "UNKNOWN"):
             return cls.OPEN
         if enc == "WEP":
             return cls.WEP
-        if enc == "WPA" or enc.startswith("WPA-"):
-            return cls.WPA1
         return cls.UNKNOWN
 
 
@@ -186,8 +186,10 @@ class EncryptionSummary:
             return head + f"[{muted}]·{_format_iv_count(self.wep_ivs)} IVs[/{muted}]"
 
         if self.type is EncryptionType.WPA1:
-            # Legacy WPA1 vendor IE: TKIP universal. Out of scope for wifit3.
+            # Legacy WPA1 vendor IE; no AKMs means it was malformed. Out of scope for wifit3.
             head = f"[{_OUT_OF_SCOPE}]WPA[/{_OUT_OF_SCOPE}]"
+            if self.akms:
+                return head + detail
             tail = f" [{muted}](PSK·TKIP)[/{muted}]" if detailed else f" [{muted}](PSK)[/{muted}]"
             return head + tail
 

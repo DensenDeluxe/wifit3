@@ -178,6 +178,28 @@ def test_headline_wpa2_enterprise_does_not_promise_a_psk_capture():
     assert "PMKID" not in headline
 
 
+def test_headline_wpa1_enterprise_says_wpa_not_wpa2():
+    ap = build_ap(encryption="WPA-EAP-TKIP", akms=["EAP"], akm_suites=[1], rsn_valid=False)
+    headline = " ".join(_headline(ap))
+    assert "WPA/Enterprise" in headline and "WPA2" not in headline
+    assert "Listening for handshake" not in headline
+
+
+def test_status_footer_wpa1_has_no_pmf():
+    ap = build_ap(encryption="WPA-PSK-TKIP", akms=["PSK"], akm_suites=[2], rsn_valid=False,
+                  pairwise_cipher="TKIP")
+    lines = fm.status_under_dash(ap, None, 0)
+    assert lines == ["[dim]Encryption:[/dim] [red]WPA[/red] [dim](PSK·TKIP)[/dim]"]
+
+
+def test_wpa1_psk_shows_deauth_but_not_pmkid_and_disables_eviltwin():
+    ap = build_ap(encryption="WPA-PSK-TKIP", akms=["PSK"], akm_suites=[2], rsn_valid=False)
+    assert DeauthCampaign.visible(ap) is True
+    assert PmkidHarvestAttack.visible(ap) is False
+    assert EvilTwinCampaign.visible(ap) is True
+    assert EvilTwinCampaign.ineligible_reason(ap) == "Needs a WPA2/WPA3 network"
+
+
 def test_enterprise_headline_ignores_a_stale_known_psk():
     """A PSK AP reconfigured to Enterprise must show Enterprise, not a stale saved PSK
     (eap_only is checked before the known-PSK / captured-handshake branches)."""
@@ -380,7 +402,7 @@ def _rsn_ap(*, encryption: str = "WPA2", akms: tuple[str, ...] = ("PSK",), wpa3:
         akm_suites = [_AKM_NUM[a] for a in akms if a in _AKM_NUM]
     return AccessPoint(
         bssid="aa:bb:cc:dd:ee:ff", encryption=encryption, akms=list(akms), akm_suites=akm_suites,
-        pairwise_cipher="CCMP", ssid=ssid, last_beacon_frame=last_beacon_frame,
+        rsn_valid=True, pairwise_cipher="CCMP", ssid=ssid, last_beacon_frame=last_beacon_frame,
         wpa3=wpa3, transition_mode=transition_mode,
         pmf_required=pmf_required, pmf_capable=pmf_capable,
         wps=wps, wps_locked=wps_locked, wps_version=wps_version)

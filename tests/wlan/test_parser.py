@@ -612,6 +612,57 @@ def test_wpa2_psk_tkip_legacy_cipher():
     assert parsed.pairwise_cipher == "TKIP"
 
 
+def _wpa_ie(*, version: int = 1, pairwise_ciphers=(0x02,), akms=(0x02,)) -> bytes:
+    """Build a tag-221 WPA1 vendor IE (00-50-F2 type 1, incl. the 2-byte tag header)."""
+    body = b"\x00\x50\xf2\x01" + struct.pack("<H", version) + b"\x00\x50\xf2\x02"  # group TKIP
+    body += struct.pack("<H", len(pairwise_ciphers))
+    for c in pairwise_ciphers:
+        body += b"\x00\x50\xf2" + bytes([c])
+    body += struct.pack("<H", len(akms))
+    for a in akms:
+        body += b"\x00\x50\xf2" + bytes([a])
+    return bytes([221, len(body)]) + body
+
+
+@pytest.mark.parametrize("pairwise, akm, label, akm_name, cipher", [
+    (0x02, 0x02, "WPA-PSK-TKIP", "PSK", "TKIP"),
+    (0x02, 0x01, "WPA-EAP-TKIP", "EAP", "TKIP"),
+    (0x04, 0x02, "WPA-PSK-CCMP", "PSK", "CCMP"),
+])
+def test_wpa1_vendor_ie_akm_and_cipher(pairwise, akm, label, akm_name, cipher):
+    wpa = _wpa_ie(pairwise_ciphers=(pairwise,), akms=(akm,))
+    parsed = WlanFrameParser.parse_80211_frame(_build_beacon(wpa_vendor_ie=wpa), -50)
+    assert parsed.encryption == label
+    assert parsed.akms == [akm_name]
+    assert parsed.akm_suites == [akm]
+    assert parsed.pairwise_cipher == cipher
+    assert parsed.rsn_valid is False
+
+
+@pytest.mark.parametrize("cut, version", [
+    (3, 1),     # AKM list cut short
+    (14, 1),    # stops inside the group cipher
+    (0, 2),
+])
+def test_malformed_wpa1_vendor_ie_keeps_the_psk_tkip_default(cut, version):
+    body = _wpa_ie(version=version)[2:]
+    body = body[:len(body) - cut]
+    wpa = bytes([221, len(body)]) + body
+    parsed = WlanFrameParser.parse_80211_frame(_build_beacon(wpa_vendor_ie=wpa), -50)
+    assert parsed.encryption == "WPA-PSK-TKIP"
+    assert parsed.akms == [] and parsed.akm_suites == []
+    assert parsed.pairwise_cipher is None
+
+
+def test_mixed_wpa1_and_rsn_takes_the_rsn_element():
+    frame = _build_beacon(rsn_ie=_rsn_ie(akms=(0x02,)), wpa_vendor_ie=_wpa_ie(akms=(0x01,)))
+    parsed = WlanFrameParser.parse_80211_frame(frame, -50)
+    assert parsed.encryption == "WPA2-PSK-CCMP"
+    assert parsed.akms == ["PSK"] and parsed.akm_suites == [2]
+    assert parsed.pairwise_cipher == "CCMP"
+    assert parsed.rsn_valid is True
+
+
 def test_open_network():
     frame = _build_beacon(rsn_ie=b"")
     parsed = WlanFrameParser.parse_80211_frame(frame, -50)
