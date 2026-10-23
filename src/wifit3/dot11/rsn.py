@@ -60,6 +60,7 @@ class RsnElement:
     akms: tuple[str, ...]
     akm_suites: tuple[int, ...]
     akm_suite_count: int
+    vendor_akm_offered: bool  # an AKM outside 00-0F-AC
     pmf_capable: bool
     pmf_required: bool
     group_management_cipher_suite: Optional[int]

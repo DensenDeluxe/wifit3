@@ -62,6 +62,7 @@ class Handshake:
     # The AP's offered AKM suites (00-0F-AC:N) from its beacon RSN IE, the fallback
     # when a frame's own AKM is unknown. See crack.handshake.
     akm_offered: List[int] = field(default_factory=list)
+    vendor_akm_offered: bool = False
 
     # -- Crack-validity --------------------------------------------------------
     # Delegated to crack.handshake, the single source of truth shared with

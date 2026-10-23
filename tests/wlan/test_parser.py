@@ -492,6 +492,7 @@ def test_vendor_akm_is_preserved_and_blocks_wpa3_enterprise_classification():
     assert parsed.akm_suites == [0x05]
     assert parsed.akms == ["EAP-SHA256", "AKM-00112299"]
     assert parsed.wpa3 is False
+    assert parsed.vendor_akm_offered is True
 
 
 def test_rsn_version_other_than_one_is_rejected():

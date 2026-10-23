@@ -58,6 +58,7 @@ class AccessPoint:
     # AKM suite numbers (00-0F-AC:N) from the RSN IE; vendor-OUI AKMs appear only in `akms`.
     akm_suites: List[int] = field(default_factory=list)
     rsn_valid: bool = False
+    vendor_akm_offered: bool = False  # an AKM outside 00-0F-AC (DPP, OSEN, ...)
     pairwise_cipher: Optional[str] = None
     beacons: int = 0
     first_seen: float = field(default_factory=time.time)

@@ -654,3 +654,28 @@ def test_an_assoc_request_binds_to_an_ap_we_have_not_beaconed():
     s.update(pkt({"type": "assoc_req", "bssid": _OTHER_BSSID, "source": _STA_MAC,
                   "ssid": "Real_Net", "rssi": -55}), W0)
     assert s.clients[_STA_MAC].bssid == _OTHER_BSSID
+
+
+def test_vendor_akm_reaches_handshake_crack_gate():
+    from wifit3.crack import handshake as wpa
+
+    s = WlanSink()
+    client = "12:22:33:44:55:66"
+    s.update(_beacon({
+        "akms": ["AKM-00112299"], "vendor_akm_offered": True,
+        "rsn_valid": True, "rsn_ie_raw": b"\x30\x02\x01\x00", "raw": bytes(36),
+    }), W0)
+    for msg_num, source, dest, nonce, mic, raw in (
+        (1, BSSID, client, bytes.fromhex("01" * 32), bytes(16), bytes(100)),
+        (2, client, BSSID, bytes.fromhex("02" * 32), bytes.fromhex("03" * 16), bytes([1]) * 100),
+    ):
+        s.update(pkt({
+            "type": "eapol", "bssid": BSSID, "source": source, "dest": dest,
+            "rssi": -45, "raw": raw, "eapol_msg_num": msg_num,
+            "eapol_replay_counter": bytes.fromhex("00" * 7 + "05"),
+            "eapol_nonce": nonce, "eapol_mic": mic, "eapol_payload": bytes(99),
+        }), W0)
+    hs = s.access_points[BSSID].handshakes[client]
+    assert hs.vendor_akm_offered is True
+    assert wpa.crackable_pairs(hs) == []
+    assert wpa.withheld_capture_label(hs) == "Unsupported AKM"

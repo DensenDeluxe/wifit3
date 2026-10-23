@@ -150,6 +150,7 @@ class WlanSink:
         akms = pkt.akms
         akm_suites = pkt.akm_suites
         rsn_valid = pkt.rsn_valid
+        vendor_akm_offered = pkt.vendor_akm_offered
         pairwise_cipher = pkt.pairwise_cipher
         wpa3 = pkt.wpa3
         transition_mode = pkt.transition_mode
@@ -177,6 +178,7 @@ class WlanSink:
                 akms=list(akms),
                 akm_suites=list(akm_suites),
                 rsn_valid=rsn_valid,
+                vendor_akm_offered=vendor_akm_offered,
                 pairwise_cipher=pairwise_cipher,
                 beacons=1 if frame_type == "beacon" else 0,
                 wpa3=wpa3,
@@ -225,6 +227,7 @@ class WlanSink:
                 ap.akms = list(akms)
                 ap.akm_suites = list(akm_suites)
                 ap.rsn_valid = rsn_valid
+                ap.vendor_akm_offered = vendor_akm_offered
                 ap.pairwise_cipher = pairwise_cipher
                 ap.wpa3 = wpa3
                 ap.transition_mode = transition_mode
@@ -266,6 +269,8 @@ class WlanSink:
                         hs.beacon_frame = raw_beacon
                     if ap.akm_suites and not hs.akm_offered:
                         hs.akm_offered = list(ap.akm_suites)
+                    if ap.vendor_akm_offered:
+                        hs.vendor_akm_offered = True
         return True
 
     def _on_wepdata_frame(self, pkt: Packet) -> bool:
@@ -354,11 +359,13 @@ class WlanSink:
                 client_mac=client_mac,
                 beacon_frame=ap.last_beacon_frame,
                 akm_offered=list(ap.akm_suites),
+                vendor_akm_offered=ap.vendor_akm_offered,
             )
             ap.handshakes[client_mac] = hs
-        elif ap.akm_suites:
+        elif ap.akm_suites or ap.vendor_akm_offered:
             # Refresh in case the handshake was created before the AP's RSN IE was known.
             hs.akm_offered = list(ap.akm_suites)
+            hs.vendor_akm_offered = ap.vendor_akm_offered
 
         # AKM this association negotiated, snapshotted now: this frame's own RSN IE
         # (M2/M3), else the client's assoc-time selection.

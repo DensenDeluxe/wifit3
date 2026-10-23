@@ -66,6 +66,7 @@ class BeaconPacket(Packet):
     akms: List[str] = field(default_factory=list)
     akm_suites: List[int] = field(default_factory=list)
     rsn_valid: bool = False
+    vendor_akm_offered: bool = False
     pairwise_cipher: Optional[str] = None
     wpa3: bool = False
     transition_mode: bool = False

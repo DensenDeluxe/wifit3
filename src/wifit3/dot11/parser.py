@@ -168,6 +168,7 @@ class WlanFrameParser:
                 "akms": tags.get("akms", []),
                 "akm_suites": tags.get("akm_suites", []),
                 "rsn_valid": tags.get("rsn_valid", False),
+                "vendor_akm_offered": tags.get("vendor_akm_offered", False),
             }
             # Copy channel / rsn_ie_raw / WPS only when the walker found them, so a missing
             # value keeps the field default.
@@ -617,6 +618,7 @@ class WlanFrameParser:
         pairwise_cipher: Optional[str] = None
         akms: List[str] = []
         akm_suites: List[int] = []
+        vendor_akm_offered = False
         rsn_element: Optional[RsnElement] = None
         channel_ds: Optional[int] = None
         channel_ht: Optional[int] = None
@@ -665,6 +667,7 @@ class WlanFrameParser:
                     pairwise_cipher = rsn.pairwise_cipher
                     akms = list(rsn.akms)
                     akm_suites = list(rsn.akm_suites)
+                    vendor_akm_offered = rsn.vendor_akm_offered
                     pmf_capable = rsn.pmf_capable
                     pmf_required = rsn.pmf_required
                     # SAE-family => WPA3; SAE + a PSK-family suite => transition.
@@ -715,6 +718,7 @@ class WlanFrameParser:
         parsed["akms"] = akms
         parsed["akm_suites"] = akm_suites
         parsed["rsn_valid"] = rsn_element is not None
+        parsed["vendor_akm_offered"] = vendor_akm_offered
         parsed["encryption"] = cls._format_encryption_label(
             frame=frame,
             has_rsn=has_rsn,
@@ -818,6 +822,7 @@ class WlanFrameParser:
                 return None
             akms: List[str] = []
             akm_suites: List[int] = []
+            vendor_akm_offered = False
             for _ in range(akm_count):
                 suite = tag_data[p:p + 4]
                 p += 4
@@ -829,6 +834,8 @@ class WlanFrameParser:
                     if sid not in akm_suites:
                         akm_suites.append(sid)   # raw 00-0F-AC:N, drives crackability
                     name = cls._AKM_NAMES.get(sid, name)
+                else:
+                    vendor_akm_offered = True
                 if name not in akms:
                     akms.append(name)
             pmf_capable = False
@@ -858,6 +865,7 @@ class WlanFrameParser:
                 akms=tuple(akms),
                 akm_suites=tuple(akm_suites),
                 akm_suite_count=akm_count,
+                vendor_akm_offered=vendor_akm_offered,
                 pmf_capable=pmf_capable,
                 pmf_required=pmf_required,
                 group_management_cipher_suite=group_management_cipher_suite,
