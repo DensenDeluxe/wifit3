@@ -297,7 +297,8 @@ def crackable_pairs(hs: Handshake) -> List[CrackablePair]:
     """Every hashcat-crackable handshake instance: the structural pairs of
     ``_pairs_ignoring_akm`` kept only when the keystone (M2/M4) frame's AKM cracks."""
     return [p for p in _pairs_ignoring_akm(hs)
-            if eapol_verdict(p.mic_frame.akm, hs) == "crackable"
+            if not p.mic_frame.akm_selection_rejected
+            and eapol_verdict(p.mic_frame.akm, hs) == "crackable"
             and not _ft_pair_incomplete(p)]
 
 
@@ -305,6 +306,8 @@ def withheld_capture_label(hs: Handshake) -> Optional[str]:
     """Badge (SAE/FT/EAP/OWE) for the first captured 4-way instance whose AKM has no
     ``-m 22000`` crack path, or None. Per instance (a mixed capture still names it)."""
     for p in _pairs_ignoring_akm(hs):
+        if p.mic_frame.akm_selection_rejected:
+            return _UNSUPPORTED_LABEL
         if _ft_pair_incomplete(p):
             return "FT"
         label = uncrackable_label(p.mic_frame.akm, hs)
@@ -316,8 +319,13 @@ def withheld_capture_label(hs: Handshake) -> Optional[str]:
 def handshake_uncrackable_label(hs: Handshake) -> Optional[str]:
     """Badge (SAE/FT/EAP/OWE) for this handshake's negotiated AKM, from its frames (no
     complete pair required, unlike withheld_capture_label), or None if crackable/unknown."""
-    akm = next((f.akm for f in reversed(hs.messages) if f.akm is not None), None)
-    return uncrackable_label(akm, hs)
+    selection = next((f for f in reversed(hs.messages)
+                      if f.akm is not None or f.akm_selection_rejected), None)
+    if selection is None:
+        return uncrackable_label(None, hs)
+    if selection.akm_selection_rejected:
+        return _UNSUPPORTED_LABEL
+    return uncrackable_label(selection.akm, hs)
 
 
 def _pairs_ignoring_akm(hs: Handshake) -> List[CrackablePair]:
@@ -331,18 +339,18 @@ def _pairs_ignoring_akm(hs: Handshake) -> List[CrackablePair]:
     expected value (the nonce-error-correction tolerance) AND that sits on the
     correct side of it in arrival order: the 4-way runs M1→M2→M3→M4, so the
     lower-numbered message is captured first. Candidates are then taken best-first:
-    smallest replay gap, then AP-confirmed ("authorized": M2+M3 / M3+M4) over
-    "challenge" (M1+M2 / M1+M4), then the temporally nearest donor. Each keystone
-    AND each ANonce is emitted once, so spurious cross-association donors collapse
-    to the single best pair while a genuine re-handshake (fresh ANonce) adds
-    another."""
+    keystones whose AKM selection wasn't rejected, then smallest replay gap, then
+    AP-confirmed ("authorized": M2+M3 / M3+M4) over "challenge" (M1+M2 / M1+M4),
+    then the temporally nearest donor. Each keystone AND each ANonce is emitted once,
+    so spurious cross-association donors collapse to the single best pair while a
+    genuine re-handshake (fresh ANonce) adds another."""
     pos = {id(f): i for i, f in enumerate(hs.messages)}
     by_msg: dict[int, List[HandshakeMessage]] = {1: [], 2: [], 3: [], 4: []}
     for f in hs.messages:
         if f.msg_num in by_msg:
             by_msg[f.msg_num].append(f)
 
-    # (replay-gap, confidence, arrival-distance, donor, keystone, pair_byte).
+    # (selection-rejected, replay-gap, confidence, arrival-distance, donor, keystone, pair_byte).
     # confidence: 0/2 = AP-confirmed pairs, 1/3 = challenge, lower sorts first.
     cands: list = []
     for mic_f in by_msg[2] + by_msg[4]:
@@ -368,13 +376,14 @@ def _pairs_ignoring_akm(hs: Handshake) -> List[CrackablePair]:
                 if rcgap > _NC_MAX:
                     continue
                 dist = abs(pos[id(d)] - pos[id(mic_f)])
-                cands.append((rcgap, confidence, dist, d, mic_f, pair_byte))
+                cands.append((mic_f.akm_selection_rejected, rcgap, confidence, dist,
+                              d, mic_f, pair_byte))
 
-    cands.sort(key=lambda c: c[:3])
+    cands.sort(key=lambda c: c[:4])
     out: List[CrackablePair] = []
     used_keystones: set[int] = set()
     seen_anonce: set[bytes] = set()
-    for _rcgap, _conf, _dist, donor, mic_f, pair_byte in cands:
+    for _rejected, _rcgap, _conf, _dist, donor, mic_f, pair_byte in cands:
         if id(mic_f) in used_keystones or donor.nonce in seen_anonce:
             continue
         used_keystones.add(id(mic_f))

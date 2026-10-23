@@ -96,6 +96,27 @@ def _rsn_ie(
     return bytes([48, len(body)]) + body
 
 
+@pytest.mark.parametrize("length", range(18, 43))
+def test_rsn_optional_fields_must_end_on_field_boundaries(length):
+    body = bytes.fromhex("0100000fac040100000fac040100000fac05c0000100")
+    body += bytes(range(16)) + bytes.fromhex("000fac06")
+    rsn = WlanFrameParser._parse_rsn_ie(body[:length])
+    assert (rsn is not None) is (length in {18, 20, 38, 42})
+    if rsn is not None:
+        assert rsn.pmf_required is (length >= 20)
+        assert rsn.group_management_cipher_suite == (6 if length == 42 else None)
+
+
+@pytest.mark.parametrize("tail", [b"\xc0", b"\xc0\x00\x00",
+                                  b"\xc0\x00\x00\x00\x00\x0f\xac"])
+def test_truncated_rsn_tail_is_not_valid(tail):
+    prefix = bytes.fromhex("0100000fac040100000fac040100000fac05")
+    body = prefix + tail
+    invalid = bytes([48, len(body)]) + body
+    truncated = WlanFrameParser.parse_80211_frame(_build_beacon(rsn_ie=invalid), -40)
+    assert not truncated.rsn_valid
+
+
 def _wps_ie(*, locked: bool = False, version2: bool = False,
             configured: bool = True, manufacturer: bytes = b"",
             model_name: bytes = b"", model_number: bytes = b"",

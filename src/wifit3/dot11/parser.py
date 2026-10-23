@@ -197,7 +197,7 @@ class WlanFrameParser:
             # Client's selected AKM from the RSN IE (24 hdr + cap + listen = 28).
             return AssocRequestPacket(
                 **base, type="assoc_req", ssid=tags.get("ssid"),
-                assoc_akm=cls._selected_rsn_akm(frame, 28))
+                assoc_akm=cls._rsn_akm_selection(frame, 28)[0])
 
         if subtype == cls.SUBTYPE_REASSOC_REQ:
             tags = cls._parse_tags(frame, subtype)
@@ -206,7 +206,7 @@ class WlanFrameParser:
             # 34 = assoc's 28 + 6-byte Current AP Address.
             return AssocRequestPacket(
                 **base, type="reassoc_req", ssid=tags.get("ssid"),
-                assoc_akm=cls._selected_rsn_akm(frame, 34))
+                assoc_akm=cls._rsn_akm_selection(frame, 34)[0])
 
         if subtype in (cls.SUBTYPE_ASSOC_RESP, cls.SUBTYPE_REASSOC_RESP):
             # Body: Capability(2) + Status(2) + AID(2); status at offset 26.
@@ -313,9 +313,8 @@ class WlanFrameParser:
                         if pmkid is not None:
                             fields["pmkid"] = pmkid
                         if msg_num == 2:
-                            akm = cls._selected_rsn_akm(key_data)
-                            if akm is not None:
-                                fields["akm"] = akm
+                            akm, rejected = cls._rsn_akm_selection(key_data)
+                            fields.update(akm=akm, akm_selection_rejected=rejected)
                             mdid, r0khid, r1khid = cls._ft_identifiers(key_data)
                             fields.update(mdid=mdid, r0khid=r0khid, r1khid=r1khid)
         return EapolPacket(**base, type="eapol", **fields)
@@ -426,15 +425,18 @@ class WlanFrameParser:
         return mdid, r0khid, r1khid
 
     @classmethod
-    def _selected_rsn_akm(cls, data: bytes, start: int = 0) -> Optional[int]:
-        """The AKM of an RSN IE listing exactly one AKM, when it is a 00-0F-AC suite; else None."""
-        for tag_id, val, _raw in iter_information_elements(data, start=start):
+    def _rsn_akm_selection(cls, data: bytes, start: int = 0) -> tuple[Optional[int], bool]:
+        """The first RSN IE's AKM when it lists exactly one 00-0F-AC AKM, and whether an RSN IE
+        (complete, truncated or malformed) is present without one."""
+        end = start
+        for tag_id, val, raw in iter_information_elements(data, start=start):
             if tag_id == 48:  # RSN IE (element id 48)
                 rsn = cls._parse_rsn_ie(val)
                 if rsn is not None and rsn.akm_suite_count == 1 and len(rsn.akm_suites) == 1:
-                    return rsn.akm_suites[0]
-                return None
-        return None
+                    return rsn.akm_suites[0], False
+                return None, True
+            end += len(raw)
+        return None, end < len(data) and data[end] == 48
 
     @classmethod
     def _ie_offset(cls, subtype: int) -> Optional[int]:
@@ -861,20 +863,26 @@ class WlanFrameParser:
             pmf_capable = False
             pmf_required = False
             group_management_cipher_suite: Optional[int] = None
-            if p + 2 <= n:
+            if p < n:
+                if p + 2 > n:
+                    return None
                 rsn_caps = int.from_bytes(tag_data[p:p+2], "little")
                 pmf_capable = bool(rsn_caps & 0x0080)  # Bit 7 (MFPC)
                 pmf_required = bool(rsn_caps & 0x0040)  # Bit 6 (MFPR)
                 p += 2
                 # Optional tail: PMKID Count (2 B) + PMKID List (16 B each) +
                 # Group Management Cipher Suite. GMCS is mandatory for WPA3-Ent-192.
-                if p + 2 <= n:
+                if p < n:
+                    if p + 2 > n:
+                        return None
                     pmkid_count = int.from_bytes(tag_data[p:p+2], "little")
                     p += 2
                     pmkid_bytes = 16 * pmkid_count
                     if p + pmkid_bytes > n:
                         return None
                     p += pmkid_bytes
+                    if p < n and p + 4 > n:
+                        return None
                     if p + 4 <= n and tag_data[p:p+3] == RSN_OUI:
                         group_management_cipher_suite = tag_data[p+3]
             return RsnElement(

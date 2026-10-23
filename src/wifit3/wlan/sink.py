@@ -18,6 +18,7 @@ from wifit3.chips.log_trace import TRACE   # registers Logger.trace + the level 
 from wifit3.models import AccessPoint, Client, Handshake, HandshakeMessage, IdSource
 from wifit3.dot11.mac import mac_to_str
 from wifit3.dot11.parser import WlanFrameParser
+from wifit3.dot11.rsn import AKM_FT_PSK, AKM_PSK, AKM_PSK_SHA256
 from wifit3.dot11.wsc import messages as WSC
 from wifit3.dot11.wsc.identity import apply_wsc_identity
 from wifit3.dot11.packet import (
@@ -28,6 +29,15 @@ from wifit3.wlan.packet_stats import PacketStats
 from wifit3.wlan.wep_store import WepCaptureStore
 
 logger = logging.getLogger(__name__)
+
+_KEY_DESCRIPTOR_VERSION_BY_PMKID_AKM = {AKM_PSK: 2, AKM_PSK_SHA256: 3, AKM_FT_PSK: 3}
+_EAPOL_KEY_DESCRIPTOR_TYPE_OFFSET = 4
+_EAPOL_KEY_DESCRIPTOR_TYPE_RSN = 2
+_KEY_INFO_VERSION_MASK = 0x0007
+_KEY_INFO_PAIRWISE = 0x0008
+_KEY_INFO_ACK = 0x0080
+_KEY_INFO_MIC = 0x0100
+
 
 def _set_result(fut, value) -> None:
     if not fut.done():
@@ -61,6 +71,8 @@ class WlanSink:
         self.packet_stats = PacketStats()   # Packet dashboard source
         self.own_macs: Set[str] = set()     # MACs we transmit as; dropped at ingest, never a client
         self.probed_ssids: Set[str] = set()  # every SSID probed for this session, by any client
+        # (bssid, client) -> the PMKID-carrying M1 whose AKM the next M2 may confirm
+        self._pmkid_m1_awaiting_m2: Dict[tuple[str, str], EapolPacket] = {}
         self._waiters: list = []            # (match, future, loop) for the next_frame await-API
         self._waiters_lock = threading.Lock()
 
@@ -305,10 +317,16 @@ class WlanSink:
             for client in self.clients.values():
                 if client.bssid == bssid:
                     client.akm_selected = None
+            self._pmkid_m1_awaiting_m2 = {
+                key: m1 for key, m1 in self._pmkid_m1_awaiting_m2.items() if key[0] != bssid}
             return True
         client_mac = pkt.client_mac
         if not client_mac or client_mac in self.own_macs:
             return True
+
+        if (frame_type in ("assoc_req", "reassoc_req", "deauth", "disassoc")
+                or isinstance(pkt, AssocRespPacket) and pkt.status not in (None, 0)):
+            self._pmkid_m1_awaiting_m2.pop((bssid, client_mac), None)
 
         if client_mac not in self.clients:
             self.clients[client_mac] = Client(mac=client_mac)
@@ -319,6 +337,8 @@ class WlanSink:
         if frame_type in ("assoc_req", "reassoc_req", "data", "wep_data", "eapol", "eap") and bssid:
             if client.bssid != bssid:
                 client.akm_selected = None
+                if client.bssid is not None:
+                    self._pmkid_m1_awaiting_m2.pop((client.bssid, client_mac), None)
             client.bssid = bssid
             if isinstance(pkt, AssocRequestPacket):
                 client.akm_selected = pkt.assoc_akm
@@ -374,7 +394,7 @@ class WlanSink:
         # AKM this association negotiated, snapshotted now: this frame's own RSN IE
         # (M2/M3), else the client's assoc-time selection.
         akm = pkt.akm
-        if akm is None:
+        if akm is None and not pkt.akm_selection_rejected:
             client_obj = self.clients.get(client_mac)
             if client_obj is not None and client_obj.bssid == bssid:
                 akm = client_obj.akm_selected
@@ -390,6 +410,7 @@ class WlanSink:
                 key_data_len=pkt.key_data_len,
                 eapol_payload=pkt.payload,
                 akm=akm,
+                akm_selection_rejected=pkt.akm_selection_rejected,
                 mdid=pkt.mdid,
                 r0khid=pkt.r0khid,
                 r1khid=pkt.r1khid,
@@ -406,7 +427,41 @@ class WlanSink:
             if pkt.key_info is not None:
                 hs.pmkid_key_descriptor_version = pkt.key_info & 3
             logger.info(f"[PMKID] {bssid} <-> {client_mac} captured {pmkid.hex()}")
+        self._confirm_pmkid_akm(hs, pkt)
         return True
+
+    @staticmethod
+    def _pairwise_key_frame(pkt: EapolPacket, key_info_flags: int) -> bool:
+        return (len(pkt.payload) > _EAPOL_KEY_DESCRIPTOR_TYPE_OFFSET
+                and pkt.payload[_EAPOL_KEY_DESCRIPTOR_TYPE_OFFSET] == _EAPOL_KEY_DESCRIPTOR_TYPE_RSN
+                and pkt.key_info is not None
+                and pkt.key_info & ~_KEY_INFO_VERSION_MASK == _KEY_INFO_PAIRWISE | key_info_flags
+                and pkt.nonce is not None and any(pkt.nonce)
+                and pkt.mic is not None and any(pkt.mic) == bool(key_info_flags & _KEY_INFO_MIC))
+
+    def _confirm_pmkid_akm(self, hs: Handshake, pkt: EapolPacket) -> None:
+        """Take an unknown PMKID AKM from the M2 that answers its M1: the next EAPOL frame of
+        this handshake, same replay counter and key descriptor version."""
+        key = (hs.bssid, hs.client_mac)
+        m1 = self._pmkid_m1_awaiting_m2.pop(key, None)
+        if hs.pmkid_akm is not None:
+            return
+        if pkt.msg_num == 1:
+            if (pkt.pmkid is not None and pkt.pmkid == hs.pmkid
+                    and pkt.from_ds and not pkt.to_ds and pkt.source == hs.bssid
+                    and self._pairwise_key_frame(pkt, _KEY_INFO_ACK)):
+                self._pmkid_m1_awaiting_m2[key] = pkt
+            return
+        if (m1 is None or m1.key_info is None or pkt.key_info is None
+                or pkt.msg_num != 2 or pkt.akm not in _KEY_DESCRIPTOR_VERSION_BY_PMKID_AKM
+                or not pkt.to_ds or pkt.from_ds or pkt.source != hs.client_mac
+                or not self._pairwise_key_frame(pkt, _KEY_INFO_MIC)
+                or pkt.replay_counter != m1.replay_counter):
+            return
+        key_version = _KEY_DESCRIPTOR_VERSION_BY_PMKID_AKM[pkt.akm]
+        if (m1.key_info & _KEY_INFO_VERSION_MASK == key_version
+                and pkt.key_info & _KEY_INFO_VERSION_MASK == key_version):
+            hs.pmkid_akm = pkt.akm
 
     def _on_eap_frame(self, pkt: Packet) -> bool:
         """Record the passively observed EAP method on the AP; never the identity."""

@@ -1,6 +1,6 @@
 """Tests for encryption / WEP / AKM-variant markup (format_encryption_markup)."""
 from wifit3.models import AccessPoint, WepStats
-from wifit3.ui.encryption_format import format_encryption_markup
+from wifit3.ui.encryption_format import format_encryption_markup, psk_capture_supported
 
 
 def _ap(**kw) -> AccessPoint:
@@ -159,3 +159,14 @@ def test_fils_enterprise_is_not_painted_attackable():
     m = format_encryption_markup(_ap(akms=["FILS-SHA256"], akm_suites=[14]), muted="dim")
     assert "[yellow]WPA2[/yellow]" in m
     assert "bright_green" not in m
+
+
+def test_vendor_only_akm_is_known_unsupported():
+    ap = _ap(
+        encryption="WPA2-AKM-00112299-CCMP",
+        akms=["AKM-00112299"],
+        akm_suites=[],
+        vendor_akm_offered=True,
+        rsn_valid=True,
+    )
+    assert psk_capture_supported(ap) is False

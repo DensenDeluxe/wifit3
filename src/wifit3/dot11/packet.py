@@ -100,6 +100,7 @@ class EapolPacket(Packet):
     payload: bytes = b""
     pmkid: Optional[bytes] = None
     akm: Optional[int] = None
+    akm_selection_rejected: bool = False  # M2's RSN IE is present but names no single AKM
     key_info: Optional[int] = None
     # 802.11r identifiers from an M2's MDE / FTE; empty when absent.
     mdid: bytes = b""

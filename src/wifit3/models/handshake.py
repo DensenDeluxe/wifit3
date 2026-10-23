@@ -26,6 +26,7 @@ class HandshakeMessage:
     # AKM (00-0F-AC:N) this association negotiated, snapshotted at capture (the frame's
     # own RSN IE, else the client's assoc selection). Gates crackability per instance.
     akm: Optional[int] = None
+    akm_selection_rejected: bool = False  # the frame's RSN IE names no single AKM: no fallback
     # 802.11r identifiers an FT-PSK M2 carries in its Key Data; empty otherwise.
     mdid: bytes = b""
     r0khid: bytes = b""

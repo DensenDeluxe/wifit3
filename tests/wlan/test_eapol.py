@@ -480,6 +480,23 @@ def test_parser_does_not_select_an_ambiguous_m2_akm(akms):
     parsed = WlanFrameParser.parse_80211_frame(_m2(_rsn_keydata(*akms)), -42)
     assert parsed.msg_num == 2
     assert parsed.akm is None
+    assert parsed.akm_selection_rejected
+
+
+@pytest.mark.parametrize("key_data", [
+    b"\x30", b"\x30\x14\x01\x00", b"\xdd\x00\x30",
+    _rsn_keydata(bytes.fromhex("00112299")),
+    bytes.fromhex("30150100000fac040100000fac040100000fac02000000"),
+])
+def test_parser_rejects_unusable_m2_selection(key_data):
+    parsed = WlanFrameParser.parse_80211_frame(_m2(key_data), -42)
+    assert parsed.akm is None and parsed.akm_selection_rejected
+
+
+@pytest.mark.parametrize("key_data, expected", [(b"\xdd\x00", None), (_rsn_keydata(2), 2)])
+def test_parser_keeps_absent_and_valid_m2_selection_distinct(key_data, expected):
+    parsed = WlanFrameParser.parse_80211_frame(_m2(key_data), -42)
+    assert parsed.akm == expected and not parsed.akm_selection_rejected
 
 
 def test_ambiguous_m2_akm_does_not_make_a_mixed_offer_crackable():
