@@ -1,8 +1,7 @@
-"""Regenerate tests/fixtures/wpa3_enterprise.pcap: one beacon per WPA3-Enterprise RSN profile.
+"""One beacon per WPA3-Enterprise RSN profile, for tests/wlan/test_wpa3_enterprise_pcap.py.
 
-Deterministic; the committed .pcap is this script's output. Run from the repo root with:
+Run from the repo root to write them to a pcap for inspection:
     PYTHONPATH=src python tests/fixtures/make_wpa3_enterprise_pcap.py
-The expected per-BSSID classification is asserted in tests/wlan/test_wpa3_enterprise_pcap.py.
 """
 from __future__ import annotations
 
@@ -48,14 +47,19 @@ def _beacon(bssid: bytes, ssid: bytes, rsn: bytes) -> bytes:
     return header + fixed + ies
 
 
-def main() -> None:
-    out = Path(__file__).with_name("wpa3_enterprise.pcap")
+def beacons() -> list[tuple[bytes, float]]:
+    """(frame, timestamp) for each profile in PROFILES, in order."""
     records = []
     for i, (name, tail, group, pairwise, akms, caps, mgmt) in enumerate(PROFILES):
         bssid = bytes.fromhex("0273a30000") + bytes([tail])
         rsn = _rsn_ie(group, pairwise, akms, caps, mgmt)
         records.append((_beacon(bssid, name[:32].encode("ascii"), rsn), 1_700_000_000.0 + i))
-    print(f"wrote {write_pcap(out, records)} beacons -> {out}")
+    return records
+
+
+def main() -> None:
+    out = Path(__file__).with_name("wpa3_enterprise.pcap")
+    print(f"wrote {write_pcap(out, beacons())} beacons -> {out}")
 
 
 if __name__ == "__main__":

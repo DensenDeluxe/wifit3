@@ -10,9 +10,7 @@ EAP_RESPONSE = 2
 EAP_SUCCESS = 3
 EAP_FAILURE = 4
 
-# Method Types a caller needs by name. Identity bodies are never read; Expanded methods carry
-# a parsed vendor tuple, while WSC alone stays on the legacy EAPOL path.
-EAP_TYPE_IDENTITY = 1
+# Expanded Type: WSC rides it and stays on the EapolPacket path.
 EAP_TYPE_EXPANDED = 0xFE
 
 EAP_METHOD_NAMES = {
