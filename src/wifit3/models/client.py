@@ -17,12 +17,8 @@ class Client:
     bssid: Optional[str] = None  # The AP it is currently connected to or probing for
     packets: int = 0
     probed_ssids: Set[str] = field(default_factory=set)  # SSIDs this client is actively searching for
-    # AKM suite chosen in the latest observed (Re)Association Request.
+    # AKM from the latest (Re)Association Request to `bssid`; cleared when that association ends.
     akm_selected: Optional[int] = None
-    akm_selected_bssid: Optional[str] = None
-    akm_selected_at: Optional[float] = None
-    # Passively observed EAP method Type numbers (EAPOL-Type-0); never the identity string.
-    eap_methods: Set[int] = field(default_factory=set)
     # Smoothed RSSI per receiving card (card name -> dBm), written by WlanSink.
     signal_by_card: Dict[str, int] = field(default_factory=dict)
     signal_history: Dict[str, deque[int]] = field(default_factory=dict, repr=False)

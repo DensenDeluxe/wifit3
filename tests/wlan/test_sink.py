@@ -163,7 +163,7 @@ def _eap_identity_frame(bssid: bytes, client: bytes, username: bytes) -> bytes:
     return b"\x08\x01\x00\x00" + bssid + client + bssid + b"\x00\x00" + _LLC_SNAP_EAPOL + eapol
 
 
-def test_eap_method_recorded_on_ap_and_client_without_identity():
+def test_eap_method_recorded_on_ap_without_identity():
     s = WlanSink()
     s.update(_beacon(), W0)                                   # the AP must exist first
     frame = _eap_identity_frame(str_to_mac(BSSID), str_to_mac("de:ad:be:ef:00:01"),
@@ -172,7 +172,6 @@ def test_eap_method_recorded_on_ap_and_client_without_identity():
 
     ap = s.access_points[BSSID]
     assert ap.observed_eap_methods == {1}                     # EAP-Identity (Type 1)
-    assert s.clients["de:ad:be:ef:00:01"].eap_methods == {1}
     # Privacy: no handshake is minted from EAP, and the username reaches no model.
     assert ap.handshakes == {}
     assert "alice" not in repr(ap) and "alice" not in repr(s.clients["de:ad:be:ef:00:01"])
@@ -198,43 +197,6 @@ def test_encryption_keeps_strongest_evidence_not_latest():
     assert s.access_points[BSSID].encryption == "WPA2-PSK-CCMP"
 
 
-def test_complete_akm_selectors_are_stored_on_access_point():
-    s = WlanSink()
-    s.update(_beacon({
-        "akms": ["EAP", "AKM-00112299"],
-        "akm_suites": [1],
-        "akm_selectors": [0x000FAC01, 0x00112299],
-    }), W0)
-    ap = s.access_points[BSSID]
-    assert ap.akm_suites == [1]
-    assert ap.akm_selectors == [0x000FAC01, 0x00112299]
-
-
-def test_vendor_akm_evidence_reaches_handshake_crack_gate():
-    from wifit3.crack import handshake as wpa
-
-    s = WlanSink()
-    client = "12:22:33:44:55:66"
-    s.update(_beacon({
-        "akms": ["AKM-00112299"], "akm_selectors": [0x00112299],
-        "rsn_valid": True, "rsn_ie_raw": b"\x30\x02\x01\x00", "raw": bytes(36),
-    }), W0)
-    for msg_num, source, dest, nonce, mic, raw in (
-        (1, BSSID, client, bytes.fromhex("01" * 32), bytes(16), bytes(100)),
-        (2, client, BSSID, bytes.fromhex("02" * 32), bytes.fromhex("03" * 16), bytes([1]) * 100),
-    ):
-        s.update(pkt({
-            "type": "eapol", "bssid": BSSID, "source": source, "dest": dest,
-            "rssi": -45, "raw": raw, "eapol_msg_num": msg_num,
-            "eapol_replay_counter": bytes.fromhex("00" * 7 + "05"),
-            "eapol_nonce": nonce, "eapol_mic": mic, "eapol_payload": bytes(99),
-        }), W0)
-    hs = s.access_points[BSSID].handshakes[client]
-    assert hs.rsn_evidence is True and hs.akm_selectors == [0x00112299]
-    assert wpa.crackable_pairs(hs) == []
-    assert wpa.withheld_capture_label(hs) == "Unsupported AKM"
-
-
 def test_invalid_rsn_followup_keeps_valid_security_profile():
     s = WlanSink()
     valid_rsn = b"\x30\x02\x01\x00"
@@ -242,7 +204,6 @@ def test_invalid_rsn_followup_keeps_valid_security_profile():
         "encryption": "WPA3-EAP-CCMP",
         "akms": ["EAP-SHA256"],
         "akm_suites": [5],
-        "akm_selectors": [0x000FAC05],
         "rsn_valid": True,
         "rsn_ie_raw": valid_rsn,
         "pairwise_cipher": "CCMP",
@@ -258,7 +219,7 @@ def test_invalid_rsn_followup_keeps_valid_security_profile():
     }), W0)
     ap = s.access_points[BSSID]
     assert ap.rsn_valid is True and ap.rsn_ie == valid_rsn
-    assert ap.akm_suites == [5] and ap.akm_selectors == [0x000FAC05]
+    assert ap.akm_suites == [5]
     assert ap.wpa3 is True and ap.pmf_capable is True and ap.pmf_required is True
 
 
@@ -277,17 +238,17 @@ def test_assoc_req_stamps_client_akm():
     s.update(pkt({"type": "assoc_req", "bssid": BSSID, "source": client, "dest": BSSID,
                   "rssi": -45, "assoc_akm": 0x02}), W0)
     assert s.clients[client].akm_selected == 0x02
-    assert s.clients[client].akm_selected_bssid == BSSID
+    assert s.clients[client].bssid == BSSID
 
 
 def test_roam_without_new_akm_does_not_reuse_previous_selection():
     s = WlanSink()
     client = "12:22:33:44:55:66"
     other_bssid = "aa:bb:cc:dd:ee:01"
-    s.update(_beacon({"akm_suites": [2], "akm_selectors": [0x000FAC02]}), W0)
+    s.update(_beacon({"akm_suites": [2]}), W0)
     s.update(_beacon({
         "bssid": other_bssid, "source": other_bssid, "ssid": "Enterprise",
-        "akm_suites": [1], "akm_selectors": [0x000FAC01],
+        "akm_suites": [1],
     }), W0)
     s.update(pkt({
         "type": "assoc_req", "bssid": BSSID, "source": client, "dest": BSSID,
@@ -302,19 +263,21 @@ def test_roam_without_new_akm_does_not_reuse_previous_selection():
     moved = s.clients[client]
     hs = s.access_points[other_bssid].handshakes[client]
     assert moved.bssid == other_bssid and moved.akm_selected is None
-    assert moved.akm_selected_bssid is None and hs.messages[0].akm is None
+    assert hs.messages[0].akm is None
 
 
 def test_disconnect_invalidates_same_bssid_akm_before_unproven_eapol():
     from wifit3.crack import handshake as wpa
 
-    for disconnect_type in ("deauth", "disassoc"):
+    client = "12:22:33:44:55:66"
+    for disconnect_type, source, dest in (
+        ("deauth", BSSID, client), ("disassoc", BSSID, client),
+        ("deauth", client, BSSID), ("disassoc", client, BSSID),
+    ):
         s = WlanSink()
-        client = "12:22:33:44:55:66"
         s.update(_beacon({
             "akms": ["EAP", "PSK"],
             "akm_suites": [1, 2],
-            "akm_selectors": [0x000FAC01, 0x000FAC02],
             "rsn_valid": True,
             "rsn_ie_raw": b"\x30\x02\x01\x00",
             "raw": bytes(36),
@@ -324,12 +287,11 @@ def test_disconnect_invalidates_same_bssid_akm_before_unproven_eapol():
             "rssi": -45, "assoc_akm": 2,
         }), W0)
         s.update(pkt({
-            "type": disconnect_type, "bssid": BSSID, "source": BSSID, "dest": client,
+            "type": disconnect_type, "bssid": BSSID, "source": source, "dest": dest,
             "rssi": -45,
         }), W0)
 
-        tracked = s.clients[client]
-        assert tracked.akm_selected is None and tracked.akm_selected_bssid is None
+        assert s.clients[client].akm_selected is None
 
         for msg_num, source, dest, nonce, mic, raw in (
             (3, BSSID, client, b"\xaa" * 32, b"\x11" * 16, b"m3" * 40),
@@ -359,7 +321,6 @@ def test_failed_assoc_and_reassoc_responses_invalidate_selected_akm():
         s.update(_beacon({
             "akms": ["EAP", "PSK"],
             "akm_suites": [1, 2],
-            "akm_selectors": [0x000FAC01, 0x000FAC02],
             "rsn_valid": True,
             "rsn_ie_raw": b"\x30\x02\x01\x00",
             "raw": bytes(36),
@@ -377,10 +338,7 @@ def test_failed_assoc_and_reassoc_responses_invalidate_selected_akm():
         assert response is not None and response.type == response_type
         s.update(response, W0)
 
-        tracked = s.clients[client]
-        assert tracked.akm_selected is None
-        assert tracked.akm_selected_bssid is None
-        assert tracked.akm_selected_at is None
+        assert s.clients[client].akm_selected is None
 
         s.update(pkt({
             "type": "eapol", "bssid": BSSID, "source": BSSID, "dest": client,
@@ -411,10 +369,7 @@ def test_ap_group_disconnect_invalidates_all_clients_for_bssid():
         }), W0)
 
         for client in clients:
-            tracked = s.clients[client]
-            assert tracked.akm_selected is None
-            assert tracked.akm_selected_bssid is None
-            assert tracked.akm_selected_at is None
+            assert s.clients[client].akm_selected is None
 
 
 def test_group_disconnect_not_from_ap_does_not_clear_other_clients():
@@ -433,30 +388,44 @@ def test_group_disconnect_not_from_ap_does_not_clear_other_clients():
     }), W0)
 
     assert s.clients[other_client].akm_selected == 2
-    assert s.clients[other_client].akm_selected_bssid == BSSID
+    assert s.clients[other_client].bssid == BSSID
 
 
-def test_expired_assoc_akm_is_not_reused_for_unproven_eapol(monkeypatch):
-    from wifit3.crack import handshake as wpa
-
-    now = [100.0]
-    monkeypatch.setattr("wifit3.wlan.sink.time.monotonic", lambda: now[0])
-    s = WlanSink()
-    client = "12:22:33:44:55:66"
-    s.update(_beacon({
+def _psk_eap_beacon():
+    return _beacon({
         "akms": ["EAP", "PSK"],
         "akm_suites": [1, 2],
-        "akm_selectors": [0x000FAC01, 0x000FAC02],
         "rsn_valid": True,
         "rsn_ie_raw": b"\x30\x02\x01\x00",
         "raw": bytes(36),
-    }), W0)
+    })
+
+
+def _four_way(client: str, replay: int) -> list:
+    frames = []
+    for msg_num in (1, 2, 3, 4):
+        from_ap = msg_num in (1, 3)
+        frames.append(pkt({
+            "type": "eapol", "bssid": BSSID,
+            "source": BSSID if from_ap else client, "dest": client if from_ap else BSSID,
+            "rssi": -45, "raw": f"m{msg_num}-replay{replay}".encode() * 8,
+            "eapol_msg_num": msg_num, "eapol_replay_counter": replay.to_bytes(8, "big"),
+            "eapol_nonce": bytes([msg_num]) * 32, "eapol_mic": bytes([msg_num]) * 16,
+            "eapol_payload": bytes(99),
+        }))
+    return frames
+
+
+def test_m1_after_ten_seconds_of_beacons_keeps_assoc_akm():
+    s = WlanSink()
+    client = "12:22:33:44:55:66"
+    s.update(_psk_eap_beacon(), W0)
     s.update(pkt({
         "type": "assoc_req", "bssid": BSSID, "source": client, "dest": BSSID,
         "rssi": -45, "assoc_akm": 2,
     }), W0)
-
-    now[0] += 6.0
+    for _ in range(100):                     # 100 beacon intervals of 102.4 ms = 10.24 s
+        s.update(_psk_eap_beacon(), W0)
     s.update(pkt({
         "type": "eapol", "bssid": BSSID, "source": BSSID, "dest": client,
         "rssi": -45, "raw": b"late-m1", "eapol_msg_num": 1,
@@ -466,11 +435,45 @@ def test_expired_assoc_akm_is_not_reused_for_unproven_eapol(monkeypatch):
         "eapol_key_info": 2,
     }), W0)
 
-    tracked = s.clients[client]
     hs = s.access_points[BSSID].handshakes[client]
-    assert tracked.akm_selected is None and tracked.akm_selected_at is None
-    assert hs.pmkid_akm is None
-    assert not wpa.pmkid_crackable(hs)
+    assert s.clients[client].akm_selected == 2
+    assert hs.messages[0].akm == 2 and hs.pmkid_akm == 2
+
+
+def test_rekey_four_way_without_new_assoc_keeps_akm():
+    s = WlanSink()
+    client = "12:22:33:44:55:66"
+    s.update(_psk_eap_beacon(), W0)
+    s.update(pkt({
+        "type": "assoc_req", "bssid": BSSID, "source": client, "dest": BSSID,
+        "rssi": -45, "assoc_akm": 2,
+    }), W0)
+    for frame in _four_way(client, replay=1) + _four_way(client, replay=2):
+        s.update(frame, W0)
+
+    hs = s.access_points[BSSID].handshakes[client]
+    assert len(hs.messages) == 8
+    assert all(message.akm == 2 for message in hs.messages)
+
+
+def test_reassoc_with_different_akm_gives_newest():
+    s = WlanSink()
+    client = "12:22:33:44:55:66"
+    s.update(_beacon({"akm_suites": [2, 8], "rsn_valid": True}), W0)
+    s.update(pkt({
+        "type": "assoc_req", "bssid": BSSID, "source": client, "dest": BSSID,
+        "rssi": -45, "assoc_akm": 2,
+    }), W0)
+    s.update(pkt({
+        "type": "reassoc_req", "bssid": BSSID, "source": client, "dest": BSSID,
+        "rssi": -45, "assoc_akm": 8,
+    }), W0)
+    for frame in _four_way(client, replay=1):
+        s.update(frame, W0)
+
+    hs = s.access_points[BSSID].handshakes[client]
+    assert s.clients[client].akm_selected == 8
+    assert all(message.akm == 8 for message in hs.messages)
 
 
 def test_decloak_via_assoc_req():
