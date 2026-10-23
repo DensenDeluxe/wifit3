@@ -381,7 +381,6 @@ def test_eap_and_ft_eap_are_not_wpa3_enterprise_transition():
     assert parsed.encryption == "WPA2-EAP+FT-EAP-CCMP"
     assert parsed.wpa3 is False
     assert parsed.transition_mode is False
-    assert parsed.wpa3_enterprise_transition_profile is False
 
 
 def test_wpa3_enterprise_192_accepts_ft_akm():
@@ -403,7 +402,13 @@ def test_wpa3_enterprise_192_ft_without_gcmp_256_is_not_wpa3():
     rsn = _rsn_ie(akms=(0x0D,), rsn_caps=0x00C0, group_mgmt_cipher=0x0C)
     parsed = WlanFrameParser.parse_80211_frame(_build_beacon(rsn_ie=rsn), -50)
     assert parsed.wpa3 is False
-    assert parsed.encryption == "WPA2-FT-EAP-SHA384-CCMP"
+    assert parsed.encryption == "WPA2-FT-EAP-SUITE-B-192-CCMP"
+
+
+def test_sha384_enterprise_akm_names_follow_hostapd():
+    rsn = _rsn_ie(akms=(0x0D, 0x16, 0x17))
+    parsed = WlanFrameParser.parse_80211_frame(_build_beacon(rsn_ie=rsn), -50)
+    assert parsed.akms == ["FT-EAP-SUITE-B-192", "FT-EAP-SHA384", "EAP-SHA384"]
 
 
 def test_wpa3_enterprise_192_requires_suite_b_192_gcmp_256_and_pmf():
@@ -477,7 +482,6 @@ def test_akm_suites_propagate_as_numbers():
     rsn = _rsn_ie(akms=(0x02, 0x08))
     parsed = WlanFrameParser.parse_80211_frame(_build_beacon(rsn_ie=rsn), -50)
     assert parsed.akm_suites == [0x02, 0x08]
-    assert parsed.akm_selectors == [0x000FAC02, 0x000FAC08]
     assert parsed.akms == ["PSK", "SAE"]
     assert parsed.rsn_valid is True
 
@@ -486,7 +490,6 @@ def test_vendor_akm_is_preserved_and_blocks_wpa3_enterprise_classification():
     rsn = _rsn_ie(akms=(0x05, bytes.fromhex("00112299")), rsn_caps=0x00C0)
     parsed = WlanFrameParser.parse_80211_frame(_build_beacon(rsn_ie=rsn), -50)
     assert parsed.akm_suites == [0x05]
-    assert parsed.akm_selectors == [0x000FAC05, 0x00112299]
     assert parsed.akms == ["EAP-SHA256", "AKM-00112299"]
     assert parsed.wpa3 is False
 
@@ -496,7 +499,7 @@ def test_rsn_version_other_than_one_is_rejected():
     invalid = rsn[:2] + b"\x02\x00" + rsn[4:]
     assert WlanFrameParser._parse_rsn_ie(invalid[2:]) is None
     parsed = WlanFrameParser.parse_80211_frame(_build_beacon(rsn_ie=invalid), -50)
-    assert parsed.akm_suites == [] and parsed.akm_selectors == []
+    assert parsed.akm_suites == []
     assert parsed.rsn_valid is False
 
 
@@ -506,7 +509,7 @@ def test_truncated_rsn_pmkid_list_is_rejected():
     invalid = bytes((48, len(body))) + body
     assert WlanFrameParser._parse_rsn_ie(body) is None
     parsed = WlanFrameParser.parse_80211_frame(_build_beacon(rsn_ie=invalid), -50)
-    assert parsed.akm_suites == [] and parsed.akm_selectors == []
+    assert parsed.akm_suites == []
     assert parsed.rsn_valid is False
 
 
@@ -553,6 +556,7 @@ def test_assoc_req_client_akm_extracted():
     [
         (0x02, 0x01),
         (0x02, bytes.fromhex("00112299")),
+        (bytes.fromhex("00112299"),),
     ],
 )
 def test_assoc_req_ambiguous_akm_is_not_selected(akms):

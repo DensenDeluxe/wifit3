@@ -120,27 +120,24 @@ def _build_eap_frame(
 
 
 @pytest.mark.parametrize(
-    "code, identifier, eap_type, method, expected_type",
+    "code, identifier, eap_type",
     [
-        (2, 1, 1, "Identity", 1),            # EAP-Response/Identity
-        (1, 2, 13, "EAP-TLS", 13),
-        (1, 3, 25, "PEAP", 25),
-        (1, 4, 21, "EAP-TTLS", 21),
-        (1, 5, 4, "MD5-Challenge", 4),
-        (2, 6, 3, "Nak", 3),
-        (3, 7, None, None, None),            # Success: no Type byte
-        (4, 8, None, None, None),            # Failure: no Type byte
-        (1, 9, 99, None, 99),                # unassigned Type -> no name, still an EapPacket
+        (2, 1, 1),            # EAP-Response/Identity
+        (1, 2, 13),           # EAP-TLS
+        (1, 3, 25),           # PEAP
+        (1, 4, 21),           # EAP-TTLS
+        (1, 5, 4),            # MD5-Challenge
+        (2, 6, 3),            # Nak
+        (3, 7, None),         # Success: no Type byte
+        (4, 8, None),         # Failure: no Type byte
+        (1, 9, 99),           # unassigned Type, still an EapPacket
     ],
 )
-def test_eap_classification(code, identifier, eap_type, method, expected_type):
+def test_eap_classification(code, identifier, eap_type):
     frame = _build_eap_frame(_EAP_BSSID, _EAP_CLIENT, code, identifier, eap_type)
     parsed = WlanFrameParser.parse_80211_frame(frame, -50)
     assert parsed.type == "eap"
-    assert parsed.code == code
-    assert parsed.identifier == identifier
-    assert parsed.eap_type == expected_type
-    assert parsed.method == method
+    assert parsed.eap_type == eap_type
     assert not hasattr(parsed, "msg_num")    # an EAP packet is not an EAPOL-Key
 
 
@@ -165,9 +162,8 @@ def test_eap_identity_username_is_never_parsed_into_a_field():
     frame = _build_eap_frame(_EAP_BSSID, _EAP_CLIENT, code=2, identifier=1, eap_type=1,
                              data=b"alice@corp.example", from_ds=False)
     parsed = WlanFrameParser.parse_80211_frame(frame, -50)
-    assert parsed.type == "eap" and parsed.method == "Identity"
+    assert parsed.type == "eap" and parsed.eap_type == 1
     assert not hasattr(parsed, "identity") and not hasattr(parsed, "username")
-    assert "alice" not in (parsed.method or "")
     assert b"alice@corp.example" in parsed.raw    # only in the transient raw frame
 
 
@@ -190,13 +186,13 @@ def test_eap_truncated_frame_never_raises(trim):
 def test_eap_header_offsets_qos_and_ht(qos, ht_control):
     frame = _build_eap_frame(_EAP_BSSID, _EAP_CLIENT, code=1, eap_type=25,
                              qos=qos, ht_control=ht_control)
-    assert WlanFrameParser.parse_80211_frame(frame, -50).method == "PEAP"
+    assert WlanFrameParser.parse_80211_frame(frame, -50).eap_type == 25
 
 
 @pytest.mark.parametrize("version", [1, 2, 3])
 def test_eap_is_802_1x_version_agnostic(version):
     frame = _build_eap_frame(_EAP_BSSID, _EAP_CLIENT, code=1, eap_type=13, version=version)
-    assert WlanFrameParser.parse_80211_frame(frame, -50).method == "EAP-TLS"
+    assert WlanFrameParser.parse_80211_frame(frame, -50).eap_type == 13
 
 
 def test_parser_extracts_full_eapol_fields():
@@ -500,8 +496,6 @@ def test_ambiguous_m2_akm_does_not_make_a_mixed_offer_crackable():
     m2 = WlanFrameParser.parse_80211_frame(_m2(_rsn_keydata(0x02, 0x01)), -42)
     hs = _make_hs(_hmsg(m1), _hmsg(m2, akm=m2.akm))
     hs.akm_offered = [0x02, 0x01]
-    hs.akm_selectors = [0x000FAC02, 0x000FAC01]
-    hs.rsn_evidence = True
     assert crackable_pairs(hs) == []
 
 

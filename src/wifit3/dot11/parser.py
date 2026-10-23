@@ -10,7 +10,6 @@ from wifit3.dot11.eap import (
     EAP_RESPONSE,
     EAP_SUCCESS,
     EAP_TYPE_EXPANDED,
-    method_name,
 )
 from wifit3.dot11.eapol import EAPOL_TYPE_EAP, EAPOL_TYPE_KEY, LLC_SNAP_EAPOL
 from wifit3.dot11.ie import iter_information_elements
@@ -37,7 +36,44 @@ from wifit3.dot11.packet import (
     Packet, BeaconPacket, EapolPacket, EapPacket, WepDataPacket, AssocRequestPacket,
     AuthPacket, AssocRespPacket, DeauthPacket, ProbeReqPacket,
 )
-from wifit3.dot11.rsn import ENTERPRISE_AKM_SUITES, SAE_AKM_SUITES
+from wifit3.dot11.rsn import (
+    AKM_802_1X,
+    AKM_802_1X_SHA256,
+    AKM_802_1X_SHA384,
+    AKM_802_1X_SUITE_B,
+    AKM_802_1X_SUITE_B_192,
+    AKM_FILS_SHA256,
+    AKM_FILS_SHA384,
+    AKM_FT_802_1X,
+    AKM_FT_802_1X_SHA384,
+    AKM_FT_802_1X_SUITE_B_192,
+    AKM_FT_FILS_SHA256,
+    AKM_FT_FILS_SHA384,
+    AKM_FT_PSK,
+    AKM_FT_PSK_SHA384,
+    AKM_FT_SAE,
+    AKM_FT_SAE_EXT_KEY,
+    AKM_OWE,
+    AKM_PSK,
+    AKM_PSK_SHA256,
+    AKM_PSK_SHA384,
+    AKM_SAE,
+    AKM_SAE_EXT_KEY,
+    CIPHER_AES_128_CMAC,
+    CIPHER_BIP_GMAC_256,
+    CIPHER_CCMP,
+    CIPHER_CCMP_256,
+    CIPHER_GCMP,
+    CIPHER_GCMP_256,
+    CIPHER_TKIP,
+    CIPHER_WEP40,
+    CIPHER_WEP104,
+    ENTERPRISE_AKM_SUITES,
+    PSK_AKM_SUITES,
+    RSN_OUI,
+    SAE_AKM_SUITES,
+    RsnElement,
+)
 
 
 class WlanFrameParser:
@@ -125,15 +161,12 @@ class WlanFrameParser:
                 "encryption": tags.get("encryption", "OPEN"),
                 "wpa3": tags.get("wpa3", False),
                 "transition_mode": tags.get("transition_mode", False),
-                "wpa3_enterprise_transition_profile": tags.get(
-                    "wpa3_enterprise_transition_profile", False),
                 "pmf_capable": tags.get("pmf_capable", False),
                 "pmf_required": tags.get("pmf_required", False),
                 "beacon_protection": tags.get("beacon_protection", False),
                 "pairwise_cipher": tags.get("pairwise_cipher"),
                 "akms": tags.get("akms", []),
                 "akm_suites": tags.get("akm_suites", []),
-                "akm_selectors": tags.get("akm_selectors", []),
                 "rsn_valid": tags.get("rsn_valid", False),
             }
             # Copy channel / rsn_ie_raw / WPS only when the walker found them, so a missing
@@ -290,7 +323,6 @@ class WlanFrameParser:
         if len(eapol_body) < 4:
             return None
         code = eapol_body[0]
-        identifier = eapol_body[1]
         eap_len = int.from_bytes(eapol_body[2:4], "big")
         if code not in (EAP_REQUEST, EAP_RESPONSE, EAP_SUCCESS, EAP_FAILURE):
             return None
@@ -302,31 +334,20 @@ class WlanFrameParser:
         if code in (EAP_SUCCESS, EAP_FAILURE):
             if eap_len != 4:
                 return None
-            return EapPacket(**base, type="eap", code=code, identifier=identifier)
+            return EapPacket(**base, type="eap")
         if eap_len < 5:
             return None
 
         eap_type = eap[4]
-        vendor_id = None
-        vendor_type = None
         if eap_type == EAP_TYPE_EXPANDED:
             if eap_len < 12:
                 return None
-            vendor_id_bytes = eap[5:8]
-            vendor_type_bytes = eap[8:12]
-            vendor_id = int.from_bytes(vendor_id_bytes, "big")
-            vendor_type = int.from_bytes(vendor_type_bytes, "big")
-            if (
-                vendor_id_bytes == WFA_VENDOR_ID
-                and vendor_type_bytes == WFA_VENDOR_TYPE_SIMPLECONFIG
-            ):
+            if eap[5:8] == WFA_VENDOR_ID and eap[8:12] == WFA_VENDOR_TYPE_SIMPLECONFIG:
                 # WSC adds an opcode and flags after the generic Expanded header.
                 if eap_len < 14:
                     return None
                 return EapolPacket(**base, type="eapol")
-        return EapPacket(**base, type="eap", code=code, identifier=identifier,
-                         eap_type=eap_type, method=method_name(eap_type),
-                         vendor_id=vendor_id, vendor_type=vendor_type)
+        return EapPacket(**base, type="eap", eap_type=eap_type)
 
     @staticmethod
     def _classify_eapol_msg(key_info: int, key_data_len: int) -> int:
@@ -367,7 +388,7 @@ class WlanFrameParser:
         for kde_type, val, _raw in iter_information_elements(key_data):
             if kde_type == 0xDD and len(val) >= 20:
                 if (
-                    val[:3] == b"\x00\x0f\xac"  # IEEE 802.11 OUI
+                    val[:3] == RSN_OUI
                     and val[3] == 0x04  # PMKID KDE data type
                 ):
                     pmkid = bytes(val[4:20])
@@ -401,17 +422,12 @@ class WlanFrameParser:
 
     @classmethod
     def _selected_rsn_akm(cls, data: bytes, start: int = 0) -> Optional[int]:
-        """The single standard AKM selected by an RSN IE, or None when ambiguous."""
+        """The AKM of an RSN IE listing exactly one AKM, when it is a 00-0F-AC suite; else None."""
         for tag_id, val, _raw in iter_information_elements(data, start=start):
             if tag_id == 48:  # RSN IE (element id 48)
                 rsn = cls._parse_rsn_ie(val)
-                if (
-                    rsn
-                    and rsn["akm_count"] == 1
-                    and len(rsn["akm_selectors"]) == 1
-                    and len(rsn["akm_suites"]) == 1
-                ):
-                    return rsn["akm_suites"][0]
+                if rsn is not None and rsn.akm_suite_count == 1 and len(rsn.akm_suites) == 1:
+                    return rsn.akm_suites[0]
                 return None
         return None
 
@@ -601,8 +617,7 @@ class WlanFrameParser:
         pairwise_cipher: Optional[str] = None
         akms: List[str] = []
         akm_suites: List[int] = []
-        akm_selectors: List[int] = []
-        rsn_details: Optional[Dict[str, Any]] = None
+        rsn_element: Optional[RsnElement] = None
         channel_ds: Optional[int] = None
         channel_ht: Optional[int] = None
         channel_vht: Optional[int] = None
@@ -646,20 +661,19 @@ class WlanFrameParser:
                 rsn = cls._parse_rsn_ie(tag_data)
                 if rsn is not None:
                     parsed["rsn_ie_raw"] = bytes(raw_elem)
-                    rsn_details = rsn
-                    pairwise_cipher = rsn["pairwise"]
-                    akms = rsn["akms"]
-                    akm_suites = rsn["akm_suites"]
-                    akm_selectors = rsn["akm_selectors"]
-                    pmf_capable = rsn["pmf_capable"]
-                    pmf_required = rsn["pmf_required"]
+                    rsn_element = rsn
+                    pairwise_cipher = rsn.pairwise_cipher
+                    akms = list(rsn.akms)
+                    akm_suites = list(rsn.akm_suites)
+                    pmf_capable = rsn.pmf_capable
+                    pmf_required = rsn.pmf_required
                     # SAE-family => WPA3; SAE + a PSK-family suite => transition.
                     # Suite-number based so WPA3-H2E (SAE-EXT-KEY, 24) is caught.
                     has_wpa3 = bool(SAE_AKM_SUITES.intersection(akm_suites))
                     transition_mode = has_wpa3 and bool(
-                        cls._PSK_SUITES.intersection(akm_suites)
+                        PSK_AKM_SUITES.intersection(akm_suites)
                     )
-                elif rsn_details is None and "rsn_ie_raw" not in parsed:
+                elif rsn_element is None and "rsn_ie_raw" not in parsed:
                     parsed["rsn_ie_raw"] = bytes(raw_elem)
             elif tag_id == 221: # Vendor Specific
                 if len(tag_data) >= 4:
@@ -675,16 +689,12 @@ class WlanFrameParser:
         if wps_payloads:
             parsed.update(cls._parse_wps_ie(b"".join(wps_payloads)))
 
-        wpa3_enterprise_transition_profile = False
-        if rsn_details is not None:
+        if rsn_element is not None:
             wpa3_enterprise, enterprise_transition = cls._classify_wpa3_enterprise(
-                rsn_details, has_wpa
+                rsn_element, has_wpa
             )
             has_wpa3 = has_wpa3 or wpa3_enterprise
             transition_mode = transition_mode or enterprise_transition
-            wpa3_enterprise_transition_profile = cls._wpa3_enterprise_transition_profile(
-                rsn_details, has_wpa
-            )
 
         # Channel preference: DS Param (tag 3, 2.4 GHz authoritative) → HT Op (tag 61, the
         # only cross-band source; 5 GHz often omits DS per 802.11-2020 9.4.2.3) → VHT Op
@@ -698,15 +708,13 @@ class WlanFrameParser:
 
         parsed["wpa3"] = has_wpa3
         parsed["transition_mode"] = transition_mode
-        parsed["wpa3_enterprise_transition_profile"] = wpa3_enterprise_transition_profile
         parsed["pmf_capable"] = pmf_capable
         parsed["pmf_required"] = pmf_required
         parsed["beacon_protection"] = beacon_protection
         parsed["pairwise_cipher"] = pairwise_cipher
         parsed["akms"] = akms
         parsed["akm_suites"] = akm_suites
-        parsed["akm_selectors"] = akm_selectors
-        parsed["rsn_valid"] = rsn_details is not None
+        parsed["rsn_valid"] = rsn_element is not None
         parsed["encryption"] = cls._format_encryption_label(
             frame=frame,
             has_rsn=has_rsn,
@@ -720,68 +728,55 @@ class WlanFrameParser:
 
     # ---- RSN IE helpers -----------------------------------------------------
 
-    # Suite-OUI prefix shared by every IEEE-standard cipher + AKM suite.
-    _SUITE_OUI = b"\x00\x0f\xac"
-
     _CIPHER_NAMES = {
-        0x01: "WEP-40",
-        0x02: "TKIP",
-        0x04: "CCMP",
-        0x05: "WEP-104",
-        0x06: "BIP-CMAC-128",
-        0x08: "GCMP-128",
-        0x09: "GCMP-256",
-        0x0A: "CCMP-256",
+        CIPHER_WEP40: "WEP-40",
+        CIPHER_TKIP: "TKIP",
+        CIPHER_CCMP: "CCMP",
+        CIPHER_WEP104: "WEP-104",
+        CIPHER_AES_128_CMAC: "BIP-CMAC-128",
+        CIPHER_GCMP: "GCMP-128",
+        CIPHER_GCMP_256: "GCMP-256",
+        CIPHER_CCMP_256: "CCMP-256",
     }
     _AKM_NAMES = {
-        0x01: "EAP",      # 802.1X (Enterprise)
-        0x02: "PSK",
-        0x03: "FT-EAP",
-        0x04: "FT-PSK",
-        0x05: "EAP-SHA256",
-        0x06: "PSK-SHA256",
-        0x08: "SAE",      # WPA3
-        0x09: "FT-SAE",
-        0x0B: "EAP-SUITE-B",
-        0x0C: "EAP-SUITE-B-192",
-        0x0D: "FT-EAP-SHA384",
-        0x0E: "FILS-SHA256",
-        0x0F: "FILS-SHA384",
-        0x10: "FT-FILS-SHA256",
-        0x11: "FT-FILS-SHA384",
-        0x12: "OWE",      # Enhanced Open
-        0x13: "FT-PSK-SHA384",
-        0x14: "PSK-SHA384",
-        0x16: "FT-EAP-SHA384",
-        0x17: "EAP-SHA384",
-        0x18: "SAE-EXT-KEY",      # WPA3 H2E (group-dependent hash)
-        0x19: "FT-SAE-EXT-KEY",
+        AKM_802_1X: "EAP",      # 802.1X (Enterprise)
+        AKM_PSK: "PSK",
+        AKM_FT_802_1X: "FT-EAP",
+        AKM_FT_PSK: "FT-PSK",
+        AKM_802_1X_SHA256: "EAP-SHA256",
+        AKM_PSK_SHA256: "PSK-SHA256",
+        AKM_SAE: "SAE",      # WPA3
+        AKM_FT_SAE: "FT-SAE",
+        AKM_802_1X_SUITE_B: "EAP-SUITE-B",
+        AKM_802_1X_SUITE_B_192: "EAP-SUITE-B-192",
+        AKM_FT_802_1X_SUITE_B_192: "FT-EAP-SUITE-B-192",
+        AKM_FILS_SHA256: "FILS-SHA256",
+        AKM_FILS_SHA384: "FILS-SHA384",
+        AKM_FT_FILS_SHA256: "FT-FILS-SHA256",
+        AKM_FT_FILS_SHA384: "FT-FILS-SHA384",
+        AKM_OWE: "OWE",      # Enhanced Open
+        AKM_FT_PSK_SHA384: "FT-PSK-SHA384",
+        AKM_PSK_SHA384: "PSK-SHA384",
+        AKM_FT_802_1X_SHA384: "FT-EAP-SHA384",
+        AKM_802_1X_SHA384: "EAP-SHA384",
+        AKM_SAE_EXT_KEY: "SAE-EXT-KEY",      # WPA3 H2E (group-dependent hash)
+        AKM_FT_SAE_EXT_KEY: "FT-SAE-EXT-KEY",
     }
 
-    # AKM suite numbers (00-0F-AC:N) grouped for WPA3 detection: any SAE-family
-    # suite => WPA3; SAE alongside a PSK-family suite => WPA2/WPA3 transition.
-    _PSK_SUITES = frozenset({0x02, 0x04, 0x06, 0x13, 0x14})
-    _WPA3_ENTERPRISE_AKM = 0x05
-    _WPA3_ENTERPRISE_192_AKM = 0x0C
-    _WPA3_ENTERPRISE_192_FT_AKM = 0x0D
-    _WPA3_DATA_CIPHERS = frozenset({0x04, 0x08, 0x09, 0x0A})
-    _GCMP_256_CIPHER = 0x09
-    _BIP_GMAC_256_CIPHER = 0x0C  # 00-0F-AC:12 as a cipher = mandatory WPA3-Ent-192 GMCS
+    _WPA3_DATA_CIPHERS = frozenset({CIPHER_CCMP, CIPHER_GCMP, CIPHER_GCMP_256, CIPHER_CCMP_256})
     # TODO: FT-PSK family (suites 4 & 19) is "crackable" but the FT key hierarchy
     #       (PMK-R0 → PMK-R1 → PTK) is more involved than plain PSK.
 
     @classmethod
     def _suite_name(cls, suite: bytes, table: Dict[int, str]) -> Optional[str]:
-        if len(suite) != 4 or suite[:3] != cls._SUITE_OUI:
+        if len(suite) != 4 or suite[:3] != RSN_OUI:
             return None
         return table.get(suite[3])
 
     @classmethod
-    def _parse_rsn_ie(cls, tag_data: bytes) -> Optional[Dict[str, Any]]:
-        """Parse the RSN IE body (tag 48 contents, sans the 2-byte header).
-
-        Returns dict with pairwise (str|None), akms (list[str]), pmf_capable,
-        pmf_required, or None if the IE is malformed.
+    def _parse_rsn_ie(cls, tag_data: bytes) -> Optional[RsnElement]:
+        """Parse the RSN IE body (tag 48 contents, sans the 2-byte header), or None if
+        the IE is malformed.
 
         Field layout (per IEEE 802.11-2020 § 9.4.2.24):
             Version (2 B LE) | Group Cipher Suite (4 B) |
@@ -796,9 +791,7 @@ class WlanFrameParser:
                 return None
             if int.from_bytes(tag_data[:2], "little") != 1:
                 return None
-            group_suite = (
-                tag_data[5] if tag_data[2:5] == cls._SUITE_OUI else None
-            )
+            group_cipher_suite = tag_data[5] if tag_data[2:5] == RSN_OUI else None
             p = 6  # skip version + group cipher
             pairwise_count = int.from_bytes(tag_data[p:p+2], "little")
             p += 2
@@ -809,7 +802,7 @@ class WlanFrameParser:
             for i in range(pairwise_count):
                 suite = tag_data[p:p + 4]
                 name = cls._suite_name(suite, cls._CIPHER_NAMES)
-                if suite[:3] == cls._SUITE_OUI:
+                if suite[:3] == RSN_OUI:
                     pairwise_suites.append(suite[3])
                 # Stick with the first listed pairwise cipher (the AP's
                 # preferred one). Some APs list TKIP+CCMP for compatibility;
@@ -825,31 +818,22 @@ class WlanFrameParser:
                 return None
             akms: List[str] = []
             akm_suites: List[int] = []
-            akm_selectors: List[int] = []
             for _ in range(akm_count):
                 suite = tag_data[p:p + 4]
                 p += 4
                 if len(suite) != 4:
                     continue
-                selector = int.from_bytes(suite, "big")
-                if selector not in akm_selectors:
-                    akm_selectors.append(selector)
-                if suite[:3] != cls._SUITE_OUI:
-                    name = f"AKM-{suite.hex()}"
-                    if name not in akms:
-                        akms.append(name)
-                    continue
-                sid = suite[3]
-                if sid not in akm_suites:
-                    akm_suites.append(sid)   # raw 00-0F-AC:N, drives crackability
-                name = cls._AKM_NAMES.get(sid)
-                if name is None:
-                    name = f"AKM-{suite.hex()}"
+                name = f"AKM-{suite.hex()}"
+                if suite[:3] == RSN_OUI:
+                    sid = suite[3]
+                    if sid not in akm_suites:
+                        akm_suites.append(sid)   # raw 00-0F-AC:N, drives crackability
+                    name = cls._AKM_NAMES.get(sid, name)
                 if name not in akms:
                     akms.append(name)
             pmf_capable = False
             pmf_required = False
-            gmcs: Optional[int] = None
+            group_management_cipher_suite: Optional[int] = None
             if p + 2 <= n:
                 rsn_caps = int.from_bytes(tag_data[p:p+2], "little")
                 pmf_capable = bool(rsn_caps & 0x0080)  # Bit 7 (MFPC)
@@ -864,91 +848,67 @@ class WlanFrameParser:
                     if p + pmkid_bytes > n:
                         return None
                     p += pmkid_bytes
-                    if p + 4 <= n and tag_data[p:p+3] == cls._SUITE_OUI:
-                        gmcs = tag_data[p+3]
-            return {
-                "pairwise": pairwise,
-                "pairwise_suites": pairwise_suites,
-                "pairwise_count": pairwise_count,
-                "group_suite": group_suite,
-                "gmcs": gmcs,
-                "akms": akms,
-                "akm_suites": akm_suites,
-                "akm_selectors": akm_selectors,
-                "akm_count": akm_count,
-                "pmf_capable": pmf_capable,
-                "pmf_required": pmf_required,
-            }
+                    if p + 4 <= n and tag_data[p:p+3] == RSN_OUI:
+                        group_management_cipher_suite = tag_data[p+3]
+            return RsnElement(
+                group_cipher_suite=group_cipher_suite,
+                pairwise_cipher=pairwise,
+                pairwise_cipher_suites=tuple(pairwise_suites),
+                pairwise_cipher_count=pairwise_count,
+                akms=tuple(akms),
+                akm_suites=tuple(akm_suites),
+                akm_suite_count=akm_count,
+                pmf_capable=pmf_capable,
+                pmf_required=pmf_required,
+                group_management_cipher_suite=group_management_cipher_suite,
+            )
         except Exception:
             return None
 
     @classmethod
-    def _classify_wpa3_enterprise(
-        cls, rsn: Dict[str, Any], has_wpa: bool
-    ) -> tuple[bool, bool]:
-        if has_wpa or not rsn["pmf_capable"] or not cls._enterprise_akms_only(rsn):
+    def _classify_wpa3_enterprise(cls, rsn: RsnElement, has_wpa: bool) -> tuple[bool, bool]:
+        if has_wpa or not rsn.pmf_capable or not cls._enterprise_akms_only(rsn):
             return False, False
 
-        akm_suites = set(rsn["akm_suites"])
+        akm_suites = set(rsn.akm_suites)
         if cls._wpa3_enterprise_192_security(rsn):
-            if akm_suites == {cls._WPA3_ENTERPRISE_192_AKM}:
+            if akm_suites == {AKM_802_1X_SUITE_B_192}:
                 return True, False
-            ft_192_akms = {
-                cls._WPA3_ENTERPRISE_192_AKM,
-                cls._WPA3_ENTERPRISE_192_FT_AKM,
-            }
-            if (
-                cls._WPA3_ENTERPRISE_192_FT_AKM in akm_suites
-                and akm_suites.issubset(ft_192_akms)
-            ):
+            ft_192_akms = {AKM_802_1X_SUITE_B_192, AKM_FT_802_1X_SUITE_B_192}
+            if AKM_FT_802_1X_SUITE_B_192 in akm_suites and akm_suites.issubset(ft_192_akms):
                 return True, False
 
-        if (
-            not cls._modern_rsn_ciphers(rsn)
-            or cls._WPA3_ENTERPRISE_AKM not in akm_suites
-        ):
+        if not cls._modern_rsn_ciphers(rsn) or AKM_802_1X_SHA256 not in akm_suites:
             return False, False
-        if 0x01 in akm_suites:
-            return not rsn["pmf_required"], not rsn["pmf_required"]
-        return rsn["pmf_required"], False
+        if AKM_802_1X in akm_suites:
+            return not rsn.pmf_required, not rsn.pmf_required
+        return rsn.pmf_required, False
 
     @classmethod
-    def _modern_rsn_ciphers(cls, rsn: Dict[str, Any]) -> bool:
+    def _modern_rsn_ciphers(cls, rsn: RsnElement) -> bool:
         return (
-            rsn["group_suite"] in cls._WPA3_DATA_CIPHERS
-            and rsn["pairwise_count"] == len(rsn["pairwise_suites"])
-            and bool(rsn["pairwise_suites"])
-            and set(rsn["pairwise_suites"]).issubset(cls._WPA3_DATA_CIPHERS)
+            rsn.group_cipher_suite in cls._WPA3_DATA_CIPHERS
+            and rsn.pairwise_cipher_count == len(rsn.pairwise_cipher_suites)
+            and bool(rsn.pairwise_cipher_suites)
+            and set(rsn.pairwise_cipher_suites).issubset(cls._WPA3_DATA_CIPHERS)
         )
 
-    @classmethod
-    def _wpa3_enterprise_192_security(cls, rsn: Dict[str, Any]) -> bool:
+    @staticmethod
+    def _wpa3_enterprise_192_security(rsn: RsnElement) -> bool:
         return (
-            rsn["pmf_required"]
-            and rsn["pairwise_count"] == 1
-            and rsn["pairwise_suites"] == [cls._GCMP_256_CIPHER]
-            and rsn["group_suite"] == cls._GCMP_256_CIPHER
-            and rsn["gmcs"] == cls._BIP_GMAC_256_CIPHER
+            rsn.pmf_required
+            and rsn.pairwise_cipher_count == 1
+            and rsn.pairwise_cipher_suites == (CIPHER_GCMP_256,)
+            and rsn.group_cipher_suite == CIPHER_GCMP_256
+            and rsn.group_management_cipher_suite == CIPHER_BIP_GMAC_256
         )
 
-    @classmethod
-    def _enterprise_akms_only(cls, rsn: Dict[str, Any]) -> bool:
+    @staticmethod
+    def _enterprise_akms_only(rsn: RsnElement) -> bool:
         return (
-            rsn["akm_count"] == len(rsn["akm_selectors"])
-            and len(rsn["akm_suites"]) == len(rsn["akm_selectors"])
-            and bool(rsn["akm_suites"])
-            and set(rsn["akm_suites"]).issubset(ENTERPRISE_AKM_SUITES)
-        )
-
-    @classmethod
-    def _wpa3_enterprise_transition_profile(cls, rsn: Dict[str, Any], has_wpa: bool) -> bool:
-        akm_suites = set(rsn["akm_suites"])
-        return (
-            not has_wpa
-            and cls._enterprise_akms_only(rsn)
-            and cls._modern_rsn_ciphers(rsn)
-            and cls._WPA3_ENTERPRISE_AKM in akm_suites
-            and 0x01 in akm_suites
+            rsn.akm_suite_count == len(rsn.akm_suites)
+            and bool(rsn.akm_suites)
+            and set(rsn.akm_suites).issubset(ENTERPRISE_AKM_SUITES)
         )
 
     @staticmethod
