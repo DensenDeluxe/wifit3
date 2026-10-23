@@ -14,7 +14,7 @@ from wifit3.ui.screens.focus_v2.art import display_name
 from wifit3.campaigns.eviltwin import (
     EvilTwinInput, PuntMode, default_punt_modes, csa_target_channel,
 )
-from wifit3.models.access_point import deauth_attack_allowed
+from wifit3.dot11.pmf import PmfPosture
 
 _MAC_RE = re.compile(r"^([0-9a-f]{2}:){5}[0-9a-f]{2}$")
 
@@ -74,7 +74,7 @@ class EvilTwinInputModal(ModalScreen[Optional[EvilTwinInput]]):
         twin = self._hosts[0] if self._hosts else None
         punter = next((m for m in self._punters if m is not twin), twin)
         d_modes = default_punt_modes(self.target)
-        robust_frames_blocked = not deauth_attack_allowed(self.target)
+        robust_frames_blocked = self.target.pmf_posture in (PmfPosture.REQUIRED, PmfPosture.INVALID)
         with Vertical(id="dialog"):
             yield Label("Evil Twin", id="title")
 
@@ -125,10 +125,9 @@ class EvilTwinInputModal(ModalScreen[Optional[EvilTwinInput]]):
     def on_mount(self) -> None:
         self._sync_bssid_field()
         self._sync_warning()
-        if not deauth_attack_allowed(self.target):
-            tooltip = "Can't confirm robust-frame injection: PMF required or invalid"
-            self.query_one("#punt-deauth", Checkbox).tooltip = tooltip
-            self.query_one("#punt-btm", Checkbox).tooltip = tooltip
+        if self.target.pmf_posture in (PmfPosture.REQUIRED, PmfPosture.INVALID):
+            self.query_one("#punt-deauth", Checkbox).tooltip = "Can't send deauths: PMF required or invalid"
+            self.query_one("#punt-btm", Checkbox).tooltip = "Can't send BTMs: PMF required or invalid"
 
     # ----- interface / channel wiring ---------------------------------------
 

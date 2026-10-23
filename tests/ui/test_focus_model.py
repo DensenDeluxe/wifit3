@@ -96,6 +96,7 @@ def _wep_ap(*, wep_key=None, unique_ivs=0):
         encryption="WEP", wep_key=wep_key,
         wep=types.SimpleNamespace(unique_ivs=unique_ivs),
         handshakes={}, wpa3=False, transition_mode=False, bssid="aa:bb:cc:dd:ee:ff",
+        akm_suites=[],
     )
 
 
@@ -103,7 +104,7 @@ def _wpa_ap(*, wps_pbc_psk=None):
     return types.SimpleNamespace(
         encryption="WPA2", wep_key=None, wep=None, handshakes={},
         wpa3=False, transition_mode=False, bssid="aa:bb:cc:dd:ee:ff",
-        wps_pbc_psk=wps_pbc_psk, wps_pin_psk=None,
+        wps_pbc_psk=wps_pbc_psk, wps_pin_psk=None, akm_suites=[],
     )
 
 
@@ -152,6 +153,7 @@ def test_headline_psk_pmkid_is_a_captured_win():
 def test_headline_names_wpa3_enterprise_without_calling_it_sae():
     ap = build_ap(encryption="WPA3", bssid="aa:bb:cc:dd:ee:ff", wpa3=True)
     ap.akms = ["EAP-SHA256"]
+    ap.akm_suites = [5]
     headline = " ".join(_headline(ap))
     assert "WPA3/Enterprise" in headline
     assert "SAE" not in headline
@@ -369,19 +371,19 @@ def test_wep_status_lines_drops_threshold_once_crossed():
 _AKM_NUM = {"PSK": 2, "PSK-SHA256": 6, "SAE": 8, "802.1X": 1, "EAP": 1, "FT-PSK": 4}
 
 
-def _rsn_ap(*, encryption="WPA2", akms=("PSK",), wpa3=False, transition_mode=False,
-            pmf_required=False, pmf_capable=False, akm_suites=None, ssid="EvilNet",
-            last_beacon_frame=b"\x80\x00beacon",
-            wps=False, wps_locked=False, wps_version="1.0"):
-    akms = list(akms)
+def _rsn_ap(*, encryption: str = "WPA2", akms: tuple[str, ...] = ("PSK",), wpa3: bool = False,
+            transition_mode: bool = False, pmf_required: bool = False, pmf_capable: bool = False,
+            akm_suites: list[int] | None = None, ssid: str | None = "EvilNet",
+            last_beacon_frame: bytes | None = b"\x80\x00beacon",
+            wps: bool = False, wps_locked: bool = False, wps_version: str = "1.0") -> AccessPoint:
     if akm_suites is None:
         akm_suites = [_AKM_NUM[a] for a in akms if a in _AKM_NUM]
-    return types.SimpleNamespace(
-        encryption=encryption, akms=akms, akm_suites=akm_suites, pairwise_cipher="CCMP",
-        ssid=ssid, is_hidden=not (ssid and ssid != "<hidden>"), last_beacon_frame=last_beacon_frame,
-        wpa3=wpa3, transition_mode=transition_mode, wep=None,
-        pmf_required=pmf_required, pmf_capable=pmf_capable, bssid="aa:bb:cc:dd:ee:ff",
-        wps=wps, wps_locked=wps_locked, wps_version=wps_version, siblings=[])
+    return AccessPoint(
+        bssid="aa:bb:cc:dd:ee:ff", encryption=encryption, akms=list(akms), akm_suites=akm_suites,
+        pairwise_cipher="CCMP", ssid=ssid, last_beacon_frame=last_beacon_frame,
+        wpa3=wpa3, transition_mode=transition_mode,
+        pmf_required=pmf_required, pmf_capable=pmf_capable,
+        wps=wps, wps_locked=wps_locked, wps_version=wps_version)
 
 
 def test_pmf_status_markup_gradient():
@@ -496,9 +498,7 @@ def test_router_identity_details_is_blank_without_evidence():
 
 
 def test_status_footer_open_is_encryption_only():
-    ap = types.SimpleNamespace(
-        encryption="OPEN", akms=[], pairwise_cipher=None, wpa3=False,
-        transition_mode=False, wep=None, pmf_required=False, pmf_capable=False, bssid="x")
+    ap = AccessPoint(bssid="aa:bb:cc:dd:ee:ff", encryption="OPEN")
     lines = fm.status_under_dash(ap, None, 0)
     assert len(lines) == 1 and "Encryption:" in lines[0]
 
@@ -512,15 +512,14 @@ def test_status_footer_wep_is_fakeauth_and_usable_ivs():
     assert not any("Encryption:" in ln for ln in lines)
 
 
-def _wep_btn_ap():
-    return types.SimpleNamespace(encryption="WEP", wps=None, wpa3=False,
-                                 transition_mode=False, wps_locked=False, is_hidden=False,
-                                 ssid="WepNet", siblings=[], akm_suites=[], bssid="aa:bb:cc:dd:ee:ff", last_beacon_frame=b"\x80\x00beacon")
+def _wep_btn_ap() -> AccessPoint:
+    return AccessPoint(bssid="aa:bb:cc:dd:ee:ff", encryption="WEP", ssid="WepNet",
+                       last_beacon_frame=b"\x80\x00beacon")
 
 
-def _wep_hidden_ap():
+def _wep_hidden_ap() -> AccessPoint:
     ap = _wep_btn_ap()
-    ap.ssid, ap.is_hidden = None, True
+    ap.ssid = None
     return ap
 
 
@@ -726,11 +725,12 @@ async def test_buttons_unconfirmed_encryption_shows_pmkid_disabled_with_reason(b
 
 @pytest.mark.asyncio(loop_scope="module")
 async def test_buttons_enterprise_hides_psk_attacks(buttons_screen):
-    """802.1X-only: no PSK to harvest, deauth, or downgrade onto a PSK twin."""
+    """802.1X-only: no PSK to harvest or deauth for; EvilTwin shown disabled with the reason."""
     b = _buttons(buttons_screen, _rsn_ap(akms=("802.1X",)))
     assert b["btn-pmkid"].display is False
     assert b["btn-deauth"].display is False
-    assert b["btn-eviltwin"].display is False
+    assert b["btn-eviltwin"].display is True and b["btn-eviltwin"].disabled is True
+    assert b["btn-eviltwin"].tooltip == "No PSK or SAE AKM: no passphrase to capture"
 
 
 @pytest.mark.asyncio(loop_scope="module")

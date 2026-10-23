@@ -16,7 +16,8 @@ from typing import Optional
 from wifit3.campaigns.eviltwin.campaign import csa_target_channel
 from wifit3.crack.handshake import PSK_CAPTURE_AKMS, crackable_pairs, pmkid_crackable
 from wifit3.dot11.csa import build_csa_beacon
-from wifit3.models.access_point import deauth_attack_allowed
+from wifit3.dot11.pmf import PmfPosture
+from wifit3.models import AccessPoint
 
 from . import treelog
 from .campaign import Campaign
@@ -42,13 +43,14 @@ class DeauthCampaign(Campaign):
     run_variant = "error"
 
     @classmethod
-    def visible(cls, ap) -> bool:
+    def visible(cls, ap: AccessPoint) -> bool:
         """WPA/WPA2-PSK only: a PSK-family AKM must be confirmed. Hides WEP/open/SAE-only/unconfirmed."""
-        return bool(PSK_CAPTURE_AKMS & set(getattr(ap, "akm_suites", None) or ()))
+        return bool(PSK_CAPTURE_AKMS & set(ap.akm_suites))
 
     @classmethod
-    def ineligible_reason(cls, ap) -> Optional[str]:
-        if not deauth_attack_allowed(ap) and not getattr(ap, "last_beacon_frame", None):
+    def ineligible_reason(cls, ap: AccessPoint) -> Optional[str]:
+        if (ap.pmf_posture in (PmfPosture.REQUIRED, PmfPosture.INVALID)
+                and not ap.last_beacon_frame):
             return "PMF required or invalid: CSA needs a captured beacon"
         return None
 
@@ -113,7 +115,7 @@ class DeauthCampaign(Campaign):
 
     async def _loop(self) -> None:
         self._baseline = self._crackable_count()
-        deauth_allowed = deauth_attack_allowed(self.target)
+        deauth_allowed = self.target.pmf_posture in (PmfPosture.DISABLED, PmfPosture.OPTIONAL)
         csa = self._csa_frame()
         if not deauth_allowed and csa is None:
             self.log(treelog.leaf("PMF required or invalid and no beacon captured: nothing to send"))

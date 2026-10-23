@@ -1,6 +1,7 @@
 import pytest
 
-from wifit3.dot11.pmf import PmfPosture, classify_pmf, deauth_resistant
+from wifit3.dot11.pmf import PmfPosture
+from wifit3.models import AccessPoint
 
 
 @pytest.mark.parametrize(
@@ -12,18 +13,6 @@ from wifit3.dot11.pmf import PmfPosture, classify_pmf, deauth_resistant
         (False, True, PmfPosture.INVALID),
     ],
 )
-def test_classify_pmf(capable, required, posture):
-    assert classify_pmf(capable, required) is posture
-
-
-@pytest.mark.parametrize(
-    "posture, resistant",
-    [
-        (PmfPosture.REQUIRED, True),
-        (PmfPosture.OPTIONAL, False),
-        (PmfPosture.DISABLED, False),
-        (PmfPosture.INVALID, None),
-    ],
-)
-def test_deauth_resistance_by_posture(posture, resistant):
-    assert deauth_resistant(posture) is resistant
+def test_access_point_pmf_posture(capable: bool, required: bool, posture: PmfPosture) -> None:
+    ap = AccessPoint(bssid="02:00:00:00:00:01", pmf_capable=capable, pmf_required=required)
+    assert ap.pmf_posture is posture

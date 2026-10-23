@@ -8,7 +8,7 @@ counts, so the loop's stop condition fires without building a real 4-way.
 from types import SimpleNamespace
 
 from wifit3.campaigns.deauth import DeauthCampaign
-from wifit3.models import Handshake
+from wifit3.models import AccessPoint, Handshake
 from wifit3.wlan.interface import DeauthResult
 from wifit3.wlan.lease import Lease
 
@@ -89,10 +89,11 @@ _BEACON = bytes.fromhex("80000000" + "ff" * 6 + "aabbccddee01" * 2 + "0000"
                         + "00" * 8 + "64001104" + "0007" + b"TESTNET".hex() + "030106")
 
 
-def _target(pmf_required=False, pmf_capable=False, beacon=_BEACON):
-    return SimpleNamespace(bssid=_BSSID, channel=6, ssid="TESTNET",
-                           pmf_required=pmf_required, pmf_capable=pmf_capable,
-                           akm_suites=[2], last_beacon_frame=beacon)
+def _target(pmf_required: bool = False, pmf_capable: bool = False,
+            beacon: bytes | None = _BEACON) -> AccessPoint:
+    return AccessPoint(bssid=_BSSID, channel=6, ssid="TESTNET",
+                       pmf_required=pmf_required, pmf_capable=pmf_capable,
+                       akm_suites=[2], last_beacon_frame=beacon)
 
 
 def _client(bssid=_BSSID):
@@ -161,12 +162,12 @@ async def test_mixed_offer_pmkid_is_not_a_campaign_capture():
 
 
 def test_visible_requires_psk():
-    assert DeauthCampaign.visible(SimpleNamespace(pmf_required=False, akm_suites=[2])) is True
-    assert DeauthCampaign.visible(SimpleNamespace(pmf_required=False, akm_suites=[4])) is True    # FT-PSK (WPA*04)
-    assert DeauthCampaign.visible(SimpleNamespace(pmf_required=False, akm_suites=[0x13])) is False  # FT-PSK-SHA384: no mode
-    assert DeauthCampaign.visible(SimpleNamespace(pmf_required=False, akm_suites=[8])) is False   # SAE
-    assert DeauthCampaign.visible(SimpleNamespace(pmf_required=False, akm_suites=[])) is False    # WEP/open
-    assert DeauthCampaign.visible(SimpleNamespace(pmf_required=True, akm_suites=[2])) is True     # PMF: CSA
+    assert DeauthCampaign.visible(AccessPoint(bssid=_BSSID, pmf_required=False, akm_suites=[2])) is True
+    assert DeauthCampaign.visible(AccessPoint(bssid=_BSSID, pmf_required=False, akm_suites=[4])) is True    # FT-PSK (WPA*04)
+    assert DeauthCampaign.visible(AccessPoint(bssid=_BSSID, pmf_required=False, akm_suites=[0x13])) is False  # FT-PSK-SHA384: no mode
+    assert DeauthCampaign.visible(AccessPoint(bssid=_BSSID, pmf_required=False, akm_suites=[8])) is False   # SAE
+    assert DeauthCampaign.visible(AccessPoint(bssid=_BSSID, pmf_required=False, akm_suites=[])) is False    # WEP/open
+    assert DeauthCampaign.visible(AccessPoint(bssid=_BSSID, pmf_required=True, akm_suites=[2])) is True     # PMF: CSA
 
 
 def test_pmf_required_without_a_beacon_is_ineligible():

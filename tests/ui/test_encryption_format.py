@@ -58,6 +58,8 @@ def test_enterprise_akm_variants_not_collapsed():
         "EAP-SHA256": "EAP256",
         "EAP-SUITE-B": "SUITE-B",
         "EAP-SUITE-B-192": "SUITE-B-192",
+        "FT-EAP-SUITE-B-192": "FT-SUITE-B-192",
+        "FT-EAP-SHA384": "FT-EAP384",
     }
     for akm, token in variants.items():
         assert f"({token})" in format_encryption_markup(_ap(akms=[akm]), muted="dim")

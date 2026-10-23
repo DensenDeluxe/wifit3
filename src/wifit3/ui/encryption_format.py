@@ -19,18 +19,14 @@ _ATTACKABLE = "bright_green"
 _NO_ATTACK_YET = "yellow"
 _OUT_OF_SCOPE = "red"
 
-_SUPPORTED_PSK_CAPTURE_NAMES = frozenset({"PSK", "FT-PSK", "PSK-SHA256"})
 
-
-def psk_capture_supported(ap) -> bool | None:
+def psk_capture_supported(ap: AccessPoint) -> bool | None:
     """Whether a current AKM yields a supported PSK capture; None without AKM evidence."""
-    suites = set(getattr(ap, "akm_suites", None) or ())
-    if suites:
-        return bool(suites & PSK_CAPTURE_AKMS)
-    akms = set(getattr(ap, "akms", None) or ())
-    if akms:
-        return bool(akms & _SUPPORTED_PSK_CAPTURE_NAMES)
-    encryption = (getattr(ap, "encryption", None) or "").upper()
+    if ap.akm_suites:
+        return bool(set(ap.akm_suites) & PSK_CAPTURE_AKMS)
+    if ap.akms:
+        return False                  # vendor-OUI AKMs only
+    encryption = (ap.encryption or "").upper()
     if encryption == "WPA" or encryption.startswith("WPA-"):
         return False
     if encryption.startswith("WPA3") or encryption == "OWE":
@@ -89,7 +85,7 @@ def _simplified_akms(akms: List[str]) -> str:
         ("FT-PSK", "FT-PSK"), ("FT-PSK-SHA384", "FT-PSK384"),
         ("EAP", "EAP"), ("EAP-SHA256", "EAP256"), ("FT-EAP", "FT-EAP"),
         ("EAP-SUITE-B", "SUITE-B"), ("EAP-SUITE-B-192", "SUITE-B-192"),
-        ("FT-EAP-SHA384", "FT-EAP384"),
+        ("FT-EAP-SUITE-B-192", "FT-SUITE-B-192"), ("FT-EAP-SHA384", "FT-EAP384"),
     ):
         if name in akms:
             parts.append(tok)

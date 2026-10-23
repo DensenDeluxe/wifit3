@@ -21,6 +21,7 @@ from wifit3.dot11 import build_deauth
 from wifit3.dot11.ap import auth_resp, assoc_resp, eapol_m1
 from wifit3.dot11.mac import mac_to_str
 from wifit3.dot11.ie import iter_information_elements
+from wifit3.dot11.packet import AssocRequestPacket, Packet
 from wifit3.dot11.rsn import SAE_AKM_SUITES
 
 logger = logging.getLogger(__name__)
@@ -211,12 +212,12 @@ class FakeAP:
         self._advance(mac_to_str(client), ClientPhase.AUTHED)
         self._tx(auth_resp(self.bssid, client))
 
-    def _on_assoc(self, pkt, client: bytes) -> None:
+    def _on_assoc(self, pkt: Packet, client: bytes) -> None:
         self.stats.assoc += 1
         cs = mac_to_str(client)
         self._cancel_m1(cs)
         reassoc = pkt.subtype_id == 0x02
-        if getattr(pkt, "assoc_akm", None) in SAE_AKM_SUITES:
+        if isinstance(pkt, AssocRequestPacket) and pkt.assoc_akm in SAE_AKM_SUITES:
             # SAE after our open auth means a cached SAE key we don't hold: refuse it, as hostapd does.
             self.stats.cached_key_rejects += 1
             self._tx(assoc_resp(self.bssid, client, channel=self.channel, status=_STATUS_INVALID_PMKID,

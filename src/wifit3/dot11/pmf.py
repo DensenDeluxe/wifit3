@@ -10,17 +10,3 @@ class PmfPosture(StrEnum):
     OPTIONAL = "optional"     # MFPC=1, MFPR=0: protected only for PMF-capable clients
     REQUIRED = "required"     # MFPC=1, MFPR=1: every client must use PMF
     INVALID = "invalid"       # MFPC=0, MFPR=1: malformed (required without capable)
-
-
-def classify_pmf(capable: bool, required: bool) -> PmfPosture:
-    """Map the RSN MFPC/MFPR bits to a PMF posture."""
-    if required:
-        return PmfPosture.REQUIRED if capable else PmfPosture.INVALID
-    return PmfPosture.OPTIONAL if capable else PmfPosture.DISABLED
-
-
-def deauth_resistant(posture: PmfPosture) -> bool | None:
-    """Whether forged deauth is rejected, or None for a contradictory PMF posture."""
-    if posture is PmfPosture.INVALID:
-        return None
-    return posture is PmfPosture.REQUIRED

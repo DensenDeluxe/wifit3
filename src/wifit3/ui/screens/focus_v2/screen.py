@@ -34,7 +34,8 @@ from textual.screen import Screen
 from textual.widgets import Button, Footer, Header, Static
 
 from wifit3.campaigns import treelog
-from wifit3.models.access_point import deauth_protected, eap_only
+from wifit3.dot11.pmf import PmfPosture
+from wifit3.models.access_point import eap_only
 from wifit3.campaigns.campaign import Campaign
 from wifit3.campaigns.pmkid import PmkidHarvestAttack
 from wifit3.campaigns.wep import WepCampaign
@@ -492,12 +493,11 @@ class FocusViewV2(Screen):
         else:
             self._log(treelog.leaf("[yellow]no interface: passive view only[/yellow]"))
 
-        protection = deauth_protected(ap)
-        if protection is True:
+        if ap.pmf_posture is PmfPosture.REQUIRED:
             self._log("[bold yellow]PMF Required:[/] "
                       "AP requires [bold]Protected Management Frames[/]")
             self._log(treelog.leaf("[italic]Deauth[/] attacks have been disabled"))
-        elif protection is None:
+        elif ap.pmf_posture is PmfPosture.INVALID:
             self._log("[bold yellow]PMF Invalid:[/] contradictory MFPC/MFPR advertisement")
             self._log(treelog.leaf("[italic]Deauth[/] disabled because protection is unknown"))
 
