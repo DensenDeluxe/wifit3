@@ -60,6 +60,7 @@ from wifit3.dot11.rsn import (
     AKM_SAE,
     AKM_SAE_EXT_KEY,
     AKM_SELECTOR_DPP,
+    AKM_SELECTOR_OSEN,
     CIPHER_AES_128_CMAC,
     CIPHER_BIP_GMAC_256,
     CIPHER_CCMP,
@@ -768,6 +769,7 @@ class WlanFrameParser:
         AKM_FT_SAE_EXT_KEY: "FT-SAE-EXT-KEY",
     }
     _VENDOR_AKM_NAMES = {
+        AKM_SELECTOR_OSEN: "OSEN",
         AKM_SELECTOR_DPP: "DPP",
     }
 

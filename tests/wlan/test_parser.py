@@ -495,10 +495,10 @@ def test_vendor_akm_is_preserved_and_blocks_wpa3_enterprise_classification():
     assert parsed.vendor_akm_offered is True
 
 
-def test_dpp_akm_is_named_dpp():
-    rsn = _rsn_ie(akms=(0x02, bytes.fromhex("506f9a02")))
+def test_wfa_vendor_akms_are_named():
+    rsn = _rsn_ie(akms=(0x02, bytes.fromhex("506f9a01"), bytes.fromhex("506f9a02")))
     parsed = WlanFrameParser.parse_80211_frame(_build_beacon(rsn_ie=rsn), -50)
-    assert parsed.akms == ["PSK", "DPP"]
+    assert parsed.akms == ["PSK", "OSEN", "DPP"]
 
 
 def test_rsn_version_other_than_one_is_rejected():

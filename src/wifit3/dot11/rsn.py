@@ -7,6 +7,7 @@ RSN_OUI = b"\x00\x0f\xac"
 WFA_OUI = b"\x50\x6f\x9a"
 
 # Wi-Fi Alliance AKM selectors, all 4 bytes: the suite number alone collides with 00-0F-AC.
+AKM_SELECTOR_OSEN = WFA_OUI + b"\x01"
 AKM_SELECTOR_DPP = WFA_OUI + b"\x02"
 
 AKM_802_1X = 1
