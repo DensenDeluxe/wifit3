@@ -17,8 +17,7 @@ from dataclasses import dataclass
 from enum import Enum, auto
 from typing import Optional
 
-from wifit3.campaigns.campaign import Campaign, CampaignState
-from wifit3.wlan.interface import Interface
+from wifit3.campaigns.campaign import Campaign
 
 
 logger = logging.getLogger(__name__)
@@ -48,47 +47,34 @@ class DragonslayerCampaign(Campaign):
     WPA3 implementations for vulnerabilities.
     """
     
+    key = "dragonslayer"
+    idle_label = "Dragonslayer"
+    run_label = "Stop Dragonslayer"
+    
     def __init__(
         self,
-        interface: Interface,
-        bssid: bytes,
-        ssid: bytes,
+        ap,
+        array,
         attack_type: DragonslayerAttack = DragonslayerAttack.REFLECTION,
         channel: int = 1
     ):
-        """Initialize dragonslayer campaign.
-        
-        Args:
-            interface: Wireless interface to use
-            bssid: Target AP BSSID
-            ssid: Target network SSID
-            attack_type: Type of dragonslayer attack
-            channel: Operating channel
-        """
-        super().__init__()
-        self.interface = interface
-        self.bssid = bssid
-        self.ssid = ssid
+        """Initialize dragonslayer campaign."""
+        super().__init__(ap, array)
         self.attack_type = attack_type
         self.channel = channel
         self.result: Optional[DragonslayerResult] = None
     
-    async def run(self) -> CampaignState:
-        """Execute the dragonslayer attack.
-        
-        Returns:
-            CampaignState.COMPLETED when attack finishes
-        """
+    async def _loop(self):
+        """Execute the dragonslayer attack."""
         logger.info(
             f"Starting Dragonslayer {self.attack_type.name} attack "
-            f"against {self.ssid.decode()} ({self.bssid.hex()})"
+            f"against {self.ap.ssid} ({self.ap.bssid.hex()})"
         )
         
         try:
-            # Set interface to monitor mode and channel
-            await self.interface.set_channel(self.channel)
+            iface = self.iface
+            await iface.set_channel(self.channel)
             
-            # Execute attack based on type
             if self.attack_type == DragonslayerAttack.REFLECTION:
                 result = await self._reflection_attack()
             elif self.attack_type == DragonslayerAttack.INVALID_CURVE:
@@ -108,24 +94,12 @@ class DragonslayerCampaign(Campaign):
             else:
                 logger.debug(f"Dragonslayer attack failed: {result.message}")
             
-            return CampaignState.COMPLETED
-            
         except Exception as e:
             logger.error(f"Dragonslayer attack error: {e}")
-            self.result = DragonslayerResult(
-                success=False,
-                message=str(e)
-            )
-            return CampaignState.COMPLETED
+            self.result = DragonslayerResult(success=False, message=str(e))
     
     async def _reflection_attack(self) -> DragonslayerResult:
-        """Execute reflection attack against SAE/EAP-pwd.
-        
-        The reflection attack exploits implementations that don't
-        properly validate the peer's SAE element.
-        """
-        # Placeholder for full implementation
-        # Would require modified wpa_supplicant from dragonslayer
+        """Execute reflection attack against SAE/EAP-pwd."""
         return DragonslayerResult(
             success=False,
             attack_type=DragonslayerAttack.REFLECTION,
@@ -133,12 +107,7 @@ class DragonslayerCampaign(Campaign):
         )
     
     async def _invalid_curve_attack(self) -> DragonslayerResult:
-        """Execute invalid curve attack against EAP-pwd.
-        
-        Sends a generator of a small subgroup as the SAE element
-        to recover the session key.
-        """
-        # Placeholder for full implementation
+        """Execute invalid curve attack against EAP-pwd."""
         return DragonslayerResult(
             success=False,
             attack_type=DragonslayerAttack.INVALID_CURVE,
@@ -146,18 +115,9 @@ class DragonslayerCampaign(Campaign):
         )
     
     async def _zero_scalar_attack(self) -> DragonslayerResult:
-        """Execute zero-scalar attack against WPA3 SAE.
-        
-        Sends a scalar equal to zero to test for vulnerabilities.
-        """
-        # Placeholder for full implementation
+        """Execute zero-scalar attack against WPA3 SAE."""
         return DragonslayerResult(
             success=False,
             attack_type=DragonslayerAttack.ZERO_SCALAR,
             message="Zero-scalar attack requires dragonslayer wpa_supplicant"
         )
-    
-    def cancel(self) -> None:
-        """Cancel the campaign."""
-        logger.info("Cancelling Dragonslayer campaign")
-        super().cancel()

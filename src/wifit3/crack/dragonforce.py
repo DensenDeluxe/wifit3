@@ -43,8 +43,8 @@ N = (
     0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF
 )
 
-PRIME_256 = int.from_bytes(bytes(P[::-1]), "little")
-ORDER_256 = int.from_bytes(bytes(N[::-1]), "little")
+PRIME_256 = int.from_bytes(b"".join(w.to_bytes(4, "little") for w in P), "little")
+ORDER_256 = int.from_bytes(b"".join(w.to_bytes(4, "little") for w in N), "little")
 
 
 def sha256_prf(key: bytes, label: str, seed: bytes, out_len: int) -> bytes:
