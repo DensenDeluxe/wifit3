@@ -3,7 +3,13 @@
 from wifit3.crack.dragonforce import crack_sae as dragonforce_crack_sae
 from wifit3.crack.hc22000_format import Hc22000Line
 from wifit3.crack.sae import SAEContext, crack_sae
-from wifit3.crack.wepwolf import crack_wep, verify_wep_key
+from wifit3.crack.wepwolf import (
+    crack_wep,
+    verify_wep_key,
+    neesus_lcg,
+    md5_104,
+    COMMON_KEYS,
+)
 from wifit3.crack.wpa_psk import psk_matches, psk_verdict
 
 __all__ = [
@@ -15,4 +21,7 @@ __all__ = [
     "dragonforce_crack_sae",
     "crack_wep",
     "verify_wep_key",
+    "neesus_lcg",
+    "md5_104",
+    "COMMON_KEYS",
 ]
