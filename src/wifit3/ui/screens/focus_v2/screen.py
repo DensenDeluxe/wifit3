@@ -41,6 +41,7 @@ from wifit3.campaigns.wep import WepCampaign
 from wifit3.campaigns.deauth import DeauthCampaign
 from wifit3.campaigns.decloak import DecloakCampaign, DecloakInput, KnownDecloakCampaign
 from wifit3.campaigns.eviltwin import EvilTwinCampaign, EvilTwinInput
+from wifit3.campaigns.eviltwin_enterprise import EvilTwinEnterpriseCampaign, spoofable
 from wifit3.campaigns.pbc import WpsPbcCampaign
 from wifit3.campaigns.pin import (EMPTY_PIN_LABEL, WpsCampaign, load_run_state,
                                   run_progress_line)
@@ -105,6 +106,7 @@ _ATTACK_BUTTONS = [
     ("btn-decloak", "Decloak"), ("btn-known-decloak", "Decloak"),
     ("btn-gen-ivs", "ARP Replay"), ("btn-chop", "ChopChop"), ("btn-deauth", "AutoDeauth"),
     ("btn-pmkid", "PMKID"), ("btn-wps-pin", "WPS PIN"), ("btn-eviltwin", "EvilTwin"),
+    ("btn-eviltwin-enterprise", "Enterprise"),
     ("btn-verify", "Verify"), ("btn-pbc", "Stop PBC"),
 ]
 
@@ -933,6 +935,8 @@ class FocusViewV2(Screen):
             self._toggle_wps_pin()
         elif bid == "btn-eviltwin":
             self._toggle_eviltwin()
+        elif bid == "btn-eviltwin-enterprise":
+            self._toggle_eviltwin_enterprise()
         elif bid == "btn-gen-ivs":
             self._toggle_generate_ivs()
         elif bid == "btn-chop":
@@ -1349,6 +1353,26 @@ class FocusViewV2(Screen):
                       " EvilTwin needs a SPOOFABLE or FIXED_MAC card.[/red]")
             return
         self.app.push_screen(EvilTwinInputModal(ap, array.members), self._on_eviltwin_input)
+
+    def _toggle_eviltwin_enterprise(self) -> None:
+        cur = self._controls.current
+        if cur is not None and cur.key == "eviltwin_enterprise":
+            self._controls.request_stop()
+        else:
+            self._start_eviltwin_enterprise()
+        self.refresh_buttons()
+
+    def _start_eviltwin_enterprise(self) -> None:
+        ap = self._target_ap
+        array = self.app.array
+        if not ap or not array or not array.members:
+            self._log("[red]✗ No target / interface. Cannot start Enterprise.[/red]")
+            return
+        if not any(spoofable(m) for m in array.members):
+            self._log("[red]✗ No interface can spoof a MAC, so none can host the twin."
+                      " Enterprise needs a SPOOFABLE card.[/red]")
+            return
+        self._controls.start(EvilTwinEnterpriseCampaign, array, ap)
 
     def _on_eviltwin_input(self, evil_input: Optional[EvilTwinInput]) -> None:
         """The modal's callback: build + run EvilTwin from its input (the one campaign

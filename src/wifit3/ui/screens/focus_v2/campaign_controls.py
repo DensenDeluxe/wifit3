@@ -6,6 +6,7 @@ from typing import Optional
 from wifit3.campaigns.campaign import Campaign
 from wifit3.campaigns.wep import WepCampaign
 from wifit3.campaigns.eviltwin import EvilTwinCampaign, EvilTwinInput
+from wifit3.campaigns.eviltwin_enterprise import EvilTwinEnterpriseCampaign
 from wifit3.campaigns.decloak import DecloakCampaign, DecloakInput
 from wifit3.campaigns.verify.campaign import VerifyCampaign
 
@@ -35,6 +36,8 @@ class CampaignControls:
             inst = campaign(array, ap, log_callback=log)
         elif campaign is EvilTwinCampaign:
             inst = campaign(array, ap, evil_input)
+        elif campaign is EvilTwinEnterpriseCampaign:
+            inst = campaign(array, ap)
         elif campaign is DecloakCampaign:
             inst = campaign(array, ap, decloak_input, log=log)
         elif issubclass(campaign, VerifyCampaign):
